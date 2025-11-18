@@ -10230,6 +10230,20 @@ CHAT_HTML = """
           }
           if (!msg || currentMode !== 'public') return;
           
+          // Store current pinned message for pin button functionality
+          currentPinnedMessage = msg;
+          // Hide pin button when showing pin
+          hidePinButton();
+          // Check if this pin is closed by the user
+          try {
+            const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
+            if (closedPins[msg.id]) {
+              // Pin is closed, show pin button instead
+              showPinButton();
+              return;
+            }
+          } catch(e) {}
+          
           // Create pinned message element at top of chat
           pinnedMessageEl = document.createElement('div');
           pinnedMessageEl.id = 'pinnedMessageTop';
@@ -10243,26 +10257,17 @@ CHAT_HTML = """
           closeBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (confirm("Remove this pinned message?")) {
-              // Call unpin API
-              fetch(`/api/admin/unpin`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({kind: "public", message_id: msg.id})
-              })
-              .then(r => r.json())
-              .then(data => {
-                if (data.ok) {
-                  pinnedMessageEl.remove();
-                  pinnedMessageEl = null;
-                } else {
-                  alert("Failed to unpin message: " + (data.error || "Unknown error"));
-                }
-              })
-              .catch(err => {
-                alert("Error unpinning message: " + err.message);
-              });
-            }
+            // Store closed state in localStorage
+            try {
+              const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
+              closedPins[msg.id] = true;
+              localStorage.setItem("closedPins", JSON.stringify(closedPins));
+            } catch(e) {}
+            // Hide the pinned message
+            pinnedMessageEl.remove();
+            pinnedMessageEl = null;
+            // Show pin button indicator
+            showPinButton();
           };
           pinnedMessageEl.appendChild(closeBtn);
           
@@ -10302,6 +10307,48 @@ CHAT_HTML = """
             const j = await r.json();
             if(r.ok && j && j.ok){ renderPinnedPublic(j.message); }
           } catch(e) {}
+        }
+        
+        // Pin button functionality for closed pins
+        let pinButtonEl = null;
+        let currentPinnedMessage = null;
+        
+        function showPinButton() {
+          // Remove existing pin button if any
+          if (pinButtonEl && pinButtonEl.parentNode) {
+            pinButtonEl.remove();
+            pinButtonEl = null;
+          }
+          
+          // Create pin button indicator
+          pinButtonEl = document.createElement("div");
+          pinButtonEl.style.cssText = "position:fixed;top:20px;right:20px;background:#f59e0b;color:#fff;border:none;border-radius:50%;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:1000;font-size:20px";
+          pinButtonEl.innerHTML = "📌";
+          pinButtonEl.title = "Show pinned message";
+          pinButtonEl.onclick = () => {
+            // Clear closed state and show the pin
+            try {
+              if (currentPinnedMessage) {
+                const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
+                delete closedPins[currentPinnedMessage.id];
+                localStorage.setItem("closedPins", JSON.stringify(closedPins));
+                // Re-render the pinned message
+                renderPinnedPublic(currentPinnedMessage);
+                // Remove pin button
+                pinButtonEl.remove();
+                pinButtonEl = null;
+              }
+            } catch(e) {}
+          };
+          
+          document.body.appendChild(pinButtonEl);
+        }
+        
+        function hidePinButton() {
+          if (pinButtonEl && pinButtonEl.parentNode) {
+            pinButtonEl.remove();
+            pinButtonEl = null;
+          }
         }
 
         // Socket connection events
@@ -10684,7 +10731,13 @@ CHAT_HTML = """
                 socket.on('pin_update', (payload)=>{
                   try {
                     if(!payload || payload.kind!=='public') return;
-                    if(payload.action==='pin'){ renderPinnedPublic(payload.message||null); }
+                    if(payload.action==='pin'){ 
+                      // Clear closed state when new pin is created
+                      try {
+                        localStorage.setItem("closedPins", JSON.stringify({}));
+                      } catch(e) {}
+                      renderPinnedPublic(payload.message||null); 
+                    }
                     else if(payload.action==='unpin'){ 
                       // If unpinned, check if there's another pin
                       ensurePinnedLoaded();
@@ -11260,6 +11313,57 @@ CHAT_HTML = """
                     }, {once: true});
                 });
             }
+            } else if (m.username && m.username !== me) {
+                // Context menu for regular users on other people's messages
+                d.addEventListener('contextmenu', ev => {
+                    ev.preventDefault();
+                    if (contextMenu) contextMenu.remove();
+                    
+                    contextMenu = document.createElement('div');
+                    contextMenu.style.position = 'fixed';
+                    contextMenu.style.top = ev.pageY + 'px';
+                    contextMenu.style.left = ev.pageX + 'px';
+                    contextMenu.style.background = 'var(--card)';
+                    contextMenu.style.border = '1px solid var(--border)';
+                    contextMenu.style.padding = '6px 10px';
+                    contextMenu.style.borderRadius = '6px';
+                    contextMenu.style.zIndex = '9999';
+                    contextMenu.style.color = 'var(--primary)';
+                    contextMenu.style.boxShadow = '0 10px 24px rgba(0,0,0,0.25)';
+
+                    const makeItem = (label, handler) => {
+                        const item = document.createElement('div');
+                        item.textContent = label;
+                        item.style.padding = '6px 4px';
+                        item.style.cursor = 'pointer';
+                        item.onmouseenter = () => item.style.background = 'var(--bg)';
+                        item.onmouseleave = () => item.style.background = 'var(--card)';
+                        item.onclick = () => {
+                            try { handler(); } finally {
+                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+                            }
+                        };
+                        return item;
+                    };
+
+                    // Reply option
+                    contextMenu.appendChild(makeItem('↩ Reply', () => {
+                        setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
+                    }));
+                    
+                    // DM option
+                    contextMenu.appendChild(makeItem('💬 DM ' + m.username, () => { openDM(m.username); }));
+                    
+                    document.body.appendChild(contextMenu);
+                    
+                    document.addEventListener('click', e => {
+                        if (contextMenu && !contextMenu.contains(e.target)) {
+                            contextMenu.remove();
+                            contextMenu = null;
+                        }
+                    }, {once: true});
+                });
+
 
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
@@ -11340,6 +11444,47 @@ CHAT_HTML = """
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
             }
+            } else if (dm.from_user && dm.from_user !== me) {
+                // Context menu for regular users on other people's DM messages
+                d.addEventListener('contextmenu', ev => {
+                    ev.preventDefault();
+                    if (contextMenu) contextMenu.remove();
+                    
+                    contextMenu = document.createElement('div');
+                    contextMenu.style.position = 'fixed';
+                    contextMenu.style.top = ev.pageY + 'px';
+                    contextMenu.style.left = ev.pageX + 'px';
+                    contextMenu.style.background = '#fff';
+                    contextMenu.style.border = '1px solid #ccc';
+                    contextMenu.style.padding = '6px 10px';
+                    contextMenu.style.borderRadius = '6px';
+                    contextMenu.style.zIndex = '9999';
+                    contextMenu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+
+                    const makeItem = (label, handler) => {
+                        const item = document.createElement('div');
+                        item.textContent = label;
+                        item.style.padding = '6px 4px';
+                        item.style.cursor = 'pointer';
+                        item.onmouseenter = () => item.style.background = '#f0f0f0';
+                        item.onmouseleave = () => item.style.background = '#fff';
+                        item.onclick = () => {
+                            try { handler(); } finally {
+                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+                            }
+                        };
+                        return item;
+                    };
+
+                    // Reply option
+                    contextMenu.appendChild(makeItem('↩ Reply', () => {
+                        setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' });
+                    }));
+                    
+                    document.body.appendChild(contextMenu);
+                    document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
+                });
+
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -11418,6 +11563,50 @@ CHAT_HTML = """
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
             }
+            } else if (m.username && m.username !== me) {
+                // Context menu for regular users on other people's GDM messages
+                d.addEventListener('contextmenu', ev => {
+                    ev.preventDefault();
+                    if (contextMenu) contextMenu.remove();
+                    
+                    contextMenu = document.createElement('div');
+                    contextMenu.style.position = 'fixed';
+                    contextMenu.style.top = ev.pageY + 'px';
+                    contextMenu.style.left = ev.pageX + 'px';
+                    contextMenu.style.background = '#fff';
+                    contextMenu.style.border = '1px solid #ccc';
+                    contextMenu.style.padding = '6px 10px';
+                    contextMenu.style.borderRadius = '6px';
+                    contextMenu.style.zIndex = '9999';
+                    contextMenu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+
+                    const makeItem = (label, handler) => {
+                        const item = document.createElement('div');
+                        item.textContent = label;
+                        item.style.padding = '6px 4px';
+                        item.style.cursor = 'pointer';
+                        item.onmouseenter = () => item.style.background = '#f0f0f0';
+                        item.onmouseleave = () => item.style.background = '#fff';
+                        item.onclick = () => {
+                            try { handler(); } finally {
+                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+                            }
+                        };
+                        return item;
+                    };
+
+                    // Reply option
+                    contextMenu.appendChild(makeItem('↩ Reply', () => {
+                        setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
+                    }));
+                    
+                    // DM option
+                    contextMenu.appendChild(makeItem('💬 DM ' + m.username, () => { openDM(m.username); }));
+                    
+                    document.body.appendChild(contextMenu);
+                    document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
+                });
+
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -12717,7 +12906,7 @@ CHAT_HTML = """
                     'UM_BAN_USER','UM_TIMEOUT_USER','UM_SEARCH_USER','UM_TEMP_BAN','UM_GLOBAL_WARNING','UM_SHADOW_BAN',
                     'MC_DELETE_MESSAGES','MC_EDIT_MESSAGES','MC_SEARCH_MESSAGES','MC_PURGE_CHANNEL','MC_PIN_MESSAGE','MC_BROADCAST_MESSAGE','MC_VIEW_HISTORY','MC_MESSAGE_LIFESPAN',
                     'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
-                    'DOWNTIME_ENABLED','ALERTS_ENABLED'
+                    'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN','DOWNTIME_ENABLED','ALERTS_ENABLED'
                   ];
                   ids.forEach(id=>{ const el = box.querySelector('#'+id); if (el && 'checked' in el) payload[id] = el.checked? '1':'0'; });
                   payload['DOWNTIME_REASON'] = (box.querySelector('#DOWNTIME_REASON')?.value||'');

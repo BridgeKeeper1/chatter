@@ -728,10 +728,10 @@ function render(list){
     if(host){ host.prepend(sec); }
     else if(target){ target.insertBefore(sec, target.firstChild); }
   }
-  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
+  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
   sec.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><strong>Admins</strong><span style="font-size:12px;color:#9ca3af">(' + (list||[]).length + ' online)</span></div>' + items;
 }
-function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
+function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
@@ -9168,98 +9168,361 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Full-Screen Responsive Design - Always show all elements */
+      /* Discord-Inspired Mobile Design - Comfortable and Spacious */
       
-      /* Small phones (up to 480px) - Full screen with scaled elements */
+      /* Small phones (up to 480px) - Discord-like comfortable layout */
       @media (max-width: 480px) {
         .app { 
           display: flex !important; 
           flex-direction: row !important; 
-          gap: 2px !important; 
+          gap: 0 !important; 
           height: 100vh; 
           overflow: hidden;
+          background: var(--bg);
         }
         
-        /* Scale sidebars to fit */
+        /* Left sidebar - Discord server list style */
         #leftbar { 
-          width: 25% !important; 
-          min-width: 80px !important; 
-          max-width: 120px !important;
-          padding: 4px !important;
+          width: 72px !important; 
+          min-width: 72px !important; 
+          max-width: 72px !important;
+          padding: 12px 8px !important;
           overflow-y: auto;
-          font-size: 11px;
-        }
-        #rightbar { 
-          width: 20% !important; 
-          min-width: 60px !important; 
-          max-width: 100px !important;
-          padding: 4px !important;
-          overflow-y: auto;
-          font-size: 11px;
+          font-size: 12px;
+          background: var(--sidebar-bg, #202225);
+          border-right: 1px solid var(--border);
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
         }
         
-        /* Main chat area takes remaining space */
+        /* Right sidebar - Discord member list style */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area - Discord chat style */
         #main { 
           flex: 1 !important; 
           min-width: 0 !important;
-          padding: 2px !important;
+          padding: 0 !important;
           display: flex;
           flex-direction: column;
           height: 100vh;
           overflow: hidden;
-        }
-        
-        /* Chat area with proper scrolling */
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 4px !important;
-          font-size: 13px;
-          line-height: 1.3;
-        }
-        
-        /* Compact form at bottom */
-        .form-row { 
-          flex-shrink: 0;
-          padding: 4px !important;
           background: var(--bg);
         }
         
-        /* Smaller text input but still usable */
-        #textInput { 
-          font-size: 14px !important; 
-          padding: 8px 6px !important; 
-          min-height: 36px !important;
-          border-radius: 6px;
+        /* Chat header area */
+        .chat-header {
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+          flex-shrink: 0;
         }
         
-        /* Compact buttons */
-        #sendForm button { 
-          padding: 8px 10px !important; 
-          min-height: 36px !important; 
-          font-size: 12px !important;
+        /* Chat messages area - Discord message style */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
         }
         
-        /* Smaller sidebar buttons */
-        #leftbar button, #rightbar button { 
-          font-size: 10px !important; 
-          padding: 4px 6px !important;
-          min-height: 32px !important;
-        }
-        
-        /* Compact messages */
+        /* Message styling - Discord-like */
         .message { 
-          font-size: 12px !important; 
-          line-height: 1.3 !important; 
-          padding: 4px !important;
-          margin: 2px 0 !important;
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          border-radius: 0;
+          background: transparent;
+          word-wrap: break-word;
         }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+          border-radius: 0;
+        }
+        
         .username { 
-          font-size: 11px !important; 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+          margin-bottom: 2px;
+          display: inline-block;
+        }
+        
+        /* Input area - Discord-like */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        /* Text input - Discord style */
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          color: var(--text);
+          width: 100%;
+          box-sizing: border-box;
+          resize: none;
+          line-height: 1.4;
+        }
+        
+        #textInput:focus {
+          outline: none;
+          border-color: var(--accent, #5865f2);
+          box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.3);
+        }
+        
+        /* Send button - Discord style */
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
           font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          cursor: pointer;
+          margin-left: 8px;
+          transition: background-color 0.2s ease;
+        }
+        
+        #sendForm button:hover {
+          background: var(--accent-hover, #4752c4) !important;
+        }
+        
+        /* Left sidebar buttons - Discord server icons style */
+        #leftbar button { 
+          font-size: 11px !important; 
+          padding: 8px 4px !important;
+          min-height: 48px !important;
+          width: 48px;
+          border-radius: 50% !important;
+          background: var(--button-bg, #36393f);
+          border: none;
+          color: var(--text);
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          line-height: 1.2;
+          word-break: break-word;
+        }
+        
+        #leftbar button:hover {
+          border-radius: 16px !important;
+          background: var(--accent, #5865f2) !important;
+          color: white;
+        }
+        
+        /* Right sidebar styling - Discord member list */
+        #rightbar button { 
+          font-size: 13px !important; 
+          padding: 8px 12px !important;
+          min-height: 36px !important;
+          width: 100%;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          cursor: pointer;
+          margin-bottom: 4px;
+          text-align: left;
+          transition: background-color 0.2s ease;
+        }
+        
+        #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* User avatars - larger and more prominent */
+        img[style*="border-radius:50%"] {
+          border: 2px solid var(--border) !important;
+        }
+        
+        /* Status indicators - larger and more visible */
+        span[style*="position:absolute"][style*="border-radius:50%"] {
+          width: 12px !important;
+          height: 12px !important;
+          border: 3px solid var(--bg, #36393f) !important;
         }
         
         /* Hide mobile nav - not needed in full screen */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0 !important; }
+        
+        /* Scrollbar styling - Discord-like */
+        ::-webkit-scrollbar {
+          width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+          background: rgba(79, 84, 92, 0.3);
+          border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+          background: rgba(79, 84, 92, 0.5);
+        }
+      }
+      
+      /* Regular phones and small tablets (481px to 768px) - Enhanced Discord style */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .app { 
+          display: flex !important; 
+          flex-direction: row !important; 
+          gap: 0 !important; 
+          height: 100vh; 
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Left sidebar - wider on larger phones */
+        #leftbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-right: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Right sidebar - comfortable width */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area */
+        #main { 
+          flex: 1 !important; 
+          min-width: 0 !important;
+          padding: 0 !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Chat messages */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
+        }
+        
+        .message { 
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          word-wrap: break-word;
+        }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+        }
+        
+        .username { 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+        }
+        
+        /* Input area */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          width: 100%;
+          box-sizing: border-box;
+        }
+        
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
+          font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          margin-left: 8px;
+        }
+        
+        /* Sidebar buttons */
+        #leftbar button, #rightbar button { 
+          font-size: 13px !important; 
+          padding: 10px 12px !important;
+          min-height: 40px !important;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          width: 100%;
+          text-align: left;
+          margin-bottom: 4px;
+          cursor: pointer;
+          transition: background-color 0.2s ease;
+        }
+        
+        #leftbar button:hover, #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* Hide mobile nav */
         #mobileNav { display: none !important; }
         body { padding-bottom: 0 !important; }
       }
@@ -10986,7 +11249,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}${badge}</span>
@@ -11006,7 +11269,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}</span>
@@ -11099,7 +11362,7 @@ CHAT_HTML = """
                 <div style='display:flex;flex-direction:column;'>
                   <div style='display:flex;align-items:center;gap:6px;'>
                     <strong>@${p.username||''}</strong>
-                    <span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                    <span style='display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                   </div>
                   <div style='color:#777;white-space:normal;word-break:break-word;overflow-wrap:anywhere;margin-top:4px'>${bio}</div>
                 </div>
@@ -11279,7 +11542,7 @@ CHAT_HTML = """
                   <span style='display:inline-flex;align-items:center;gap:8px;'>
                     <span style='position:relative;display:inline-block'>
                       <img src='${ava}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                     </span>
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}

@@ -53,9 +53,431 @@ import requests
 import difflib
 import zlib
 
-import emergency_shutdown
+# ============================================================================
+# EMERGENCY SHUTDOWN SYSTEM - Consolidated into main file
+# ============================================================================
 
-import emergency_shutdown
+# Emergency shutdown state tracking
+emergency_shutdown_active = False
+emergency_shutdown_timestamp = None
+emergency_shutdown_trigger = None
+emergency_shutdown_admin = None
+emergency_shutdown_snapshot = {}
+emergency_shutdown_locked_users = set()
+emergency_recovery_stage = 0  # 0=full shutdown, 1=read-only, 2=chat-only, 3=full recovery
+
+# Emergency shutdown logging
+emergency_shutdown_log = []
+def _emergency_log(message: str, level: str = "INFO", admin: str = None):
+    """Log emergency shutdown events with timestamp."""
+    try:
+        timestamp = datetime.utcnow().isoformat()
+        log_entry = {
+            'timestamp': timestamp,
+            'level': level,
+            'message': message,
+            'admin': admin or 'SYSTEM',
+            'stage': emergency_recovery_stage
+        }
+        emergency_shutdown_log.append(log_entry)
+        
+        # Keep only last 1000 log entries to prevent memory issues
+        if len(emergency_shutdown_log) > 1000:
+            emergency_shutdown_log[:] = emergency_shutdown_log[-1000:]
+            
+        # Also log to console for debugging
+        print(f"[EMERGENCY] {timestamp} [{level}] {message}")
+        
+    except Exception as e:
+        print(f"[EMERGENCY] Failed to log: {e}")
+
+def _emergency_create_snapshot(get_db_func, get_setting_func, connected_sockets, spam_strikes):
+    """Create a snapshot of current system state for recovery analysis."""
+    try:
+        snapshot = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'active_users': [],
+            'recent_messages': [],
+            'system_settings': {},
+            'database_stats': {},
+            'socket_connections': len(connected_sockets),
+            'spam_strikes': dict(spam_strikes),
+            'maintenance_mode': get_setting_func('MAINTENANCE_MODE', '0')
+        }
+        
+        # Capture active users (last 5 minutes)
+        try:
+            db = get_db_func()
+            cur = db.cursor()
+            five_min_ago = datetime.utcnow() - timedelta(minutes=5)
+            cur.execute("""
+                SELECT DISTINCT username FROM messages 
+                WHERE timestamp > ? 
+                ORDER BY timestamp DESC LIMIT 100
+            """, (five_min_ago,))
+            snapshot['active_users'] = [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            snapshot['active_users'] = ['Error capturing users: ' + str(e)]
+        
+        # Capture recent messages (last 10)
+        try:
+            db = get_db_func()
+            cur = db.cursor()
+            cur.execute("""
+                SELECT username, text, timestamp FROM messages 
+                ORDER BY timestamp DESC LIMIT 10
+            """)
+            snapshot['recent_messages'] = [
+                {'user': row[0], 'text': row[1][:100], 'time': str(row[2])}
+                for row in cur.fetchall()
+            ]
+        except Exception as e:
+            snapshot['recent_messages'] = ['Error capturing messages: ' + str(e)]
+        
+        # Capture key system settings
+        try:
+            settings_to_capture = [
+                'MAINTENANCE_MODE', 'PUBLIC_ENABLED', 'DM_ENABLED', 'GDM_ENABLED',
+                'ANNOUNCEMENTS_ONLY', 'SPAM_MAX_CHARS', 'SPAM_SENSITIVITY'
+            ]
+            for setting in settings_to_capture:
+                snapshot['system_settings'][setting] = get_setting_func(setting, 'N/A')
+        except Exception as e:
+            snapshot['system_settings'] = {'error': str(e)}
+        
+        # Database statistics
+        try:
+            db = get_db_func()
+            cur = db.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cur.fetchall()]
+            
+            for table in tables[:10]:  # Limit to first 10 tables
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    snapshot['database_stats'][table] = cur.fetchone()[0]
+                except Exception:
+                    snapshot['database_stats'][table] = 'Error'
+        except Exception as e:
+            snapshot['database_stats'] = {'error': str(e)}
+        
+        return snapshot
+        
+    except Exception as e:
+        return {'error': f'Failed to create snapshot: {e}', 'timestamp': datetime.utcnow().isoformat()}
+
+def _emergency_backup_database(db_path):
+    """Create a backup of the database for post-incident analysis."""
+    try:
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        backup_path = f"{db_path}.emergency_backup_{timestamp}"
+        
+        # Create backup
+        shutil.copy2(db_path, backup_path)
+        
+        _emergency_log(f"Database backup created: {backup_path}", "INFO")
+        return backup_path
+        
+    except Exception as e:
+        _emergency_log(f"Failed to create database backup: {e}", "ERROR")
+        return None
+
+def emergency_shutdown_activate(trigger: str, admin: str = None, auto_backup: bool = True, 
+                               db_path=None, get_db_func=None, get_setting_func=None, 
+                               set_setting_func=None, connected_sockets=None, spam_strikes=None,
+                               notify_func=None):
+    """
+    Activate emergency shutdown mode.
+    
+    Args:
+        trigger: Reason for shutdown (e.g., "ADMIN_COMMAND", "SECURITY_INCIDENT", "SYSTEM_ERROR")
+        admin: Admin username who triggered shutdown (if applicable)
+        auto_backup: Whether to automatically create database backup
+    """
+    global emergency_shutdown_active, emergency_shutdown_timestamp, emergency_shutdown_trigger
+    global emergency_shutdown_admin, emergency_shutdown_snapshot, emergency_recovery_stage
+    
+    try:
+        if emergency_shutdown_active:
+            _emergency_log(f"Emergency shutdown already active, ignoring duplicate trigger: {trigger}", "WARNING", admin)
+            return False
+        
+        # Activate emergency mode
+        emergency_shutdown_active = True
+        emergency_shutdown_timestamp = datetime.utcnow()
+        emergency_shutdown_trigger = trigger
+        emergency_shutdown_admin = admin
+        emergency_recovery_stage = 0
+        
+        _emergency_log(f"EMERGENCY SHUTDOWN ACTIVATED - Trigger: {trigger}", "CRITICAL", admin)
+        
+        # Create system snapshot
+        if get_db_func and get_setting_func and connected_sockets is not None and spam_strikes is not None:
+            emergency_shutdown_snapshot = _emergency_create_snapshot(
+                get_db_func, get_setting_func, connected_sockets, spam_strikes
+            )
+            _emergency_log("System snapshot created", "INFO", admin)
+        
+        # Create database backup if requested
+        if auto_backup and db_path:
+            backup_path = _emergency_backup_database(db_path)
+            if backup_path:
+                emergency_shutdown_snapshot['backup_path'] = backup_path
+        
+        # Set maintenance mode
+        if set_setting_func:
+            try:
+                set_setting_func('MAINTENANCE_MODE', '1')
+                _emergency_log("Maintenance mode activated", "INFO", admin)
+            except Exception as e:
+                _emergency_log(f"Failed to set maintenance mode: {e}", "ERROR", admin)
+        
+        # Notify all connected users
+        if notify_func:
+            try:
+                notify_func("Emergency maintenance in progress. Please stand by.")
+            except Exception as e:
+                _emergency_log(f"Failed to notify users: {e}", "ERROR", admin)
+        
+        _emergency_log("Emergency shutdown activation complete", "INFO", admin)
+        return True
+        
+    except Exception as e:
+        _emergency_log(f"Failed to activate emergency shutdown: {e}", "ERROR", admin)
+        return False
+
+def emergency_shutdown_deactivate(admin: str = None, set_setting_func=None, notify_func=None):
+    """Deactivate emergency shutdown and return to normal operation."""
+    global emergency_shutdown_active, emergency_recovery_stage
+    
+    try:
+        if not emergency_shutdown_active:
+            _emergency_log("Emergency shutdown not active, ignoring deactivation", "WARNING", admin)
+            return False
+        
+        _emergency_log("EMERGENCY SHUTDOWN DEACTIVATION STARTED", "CRITICAL", admin)
+        
+        # Full recovery
+        emergency_recovery_stage = 3
+        emergency_shutdown_active = False
+        
+        # Remove maintenance mode
+        if set_setting_func:
+            try:
+                set_setting_func('MAINTENANCE_MODE', '0')
+                _emergency_log("Maintenance mode deactivated", "INFO", admin)
+            except Exception as e:
+                _emergency_log(f"Failed to remove maintenance mode: {e}", "ERROR", admin)
+        
+        # Clear locked users
+        emergency_shutdown_locked_users.clear()
+        _emergency_log("All user locks cleared", "INFO", admin)
+        
+        # Notify users
+        if notify_func:
+            try:
+                notify_func("Emergency maintenance complete. Normal operation resumed.")
+            except Exception as e:
+                _emergency_log(f"Failed to notify users of recovery: {e}", "ERROR", admin)
+        
+        _emergency_log("EMERGENCY SHUTDOWN DEACTIVATION COMPLETE", "CRITICAL", admin)
+        return True
+        
+    except Exception as e:
+        _emergency_log(f"Failed to deactivate emergency shutdown: {e}", "ERROR", admin)
+        return False
+
+def emergency_shutdown_set_stage(stage: int, admin: str = None):
+    """
+    Set recovery stage for gradual system restoration.
+    
+    Stages:
+    0 = Full shutdown (no operations)
+    1 = Read-only mode (view messages only)
+    2 = Chat-only mode (messaging enabled, no login/registration)
+    3 = Full recovery (all operations enabled)
+    """
+    global emergency_recovery_stage
+    
+    try:
+        if not emergency_shutdown_active and stage != 3:
+            _emergency_log(f"Cannot set stage {stage} - emergency shutdown not active", "WARNING", admin)
+            return False
+        
+        old_stage = emergency_recovery_stage
+        emergency_recovery_stage = max(0, min(3, stage))
+        
+        stage_names = {
+            0: "Full Shutdown",
+            1: "Read-Only Mode", 
+            2: "Chat-Only Mode",
+            3: "Full Recovery"
+        }
+        
+        _emergency_log(f"Recovery stage changed: {old_stage} -> {emergency_recovery_stage} ({stage_names.get(emergency_recovery_stage, 'Unknown')})", "INFO", admin)
+        
+        # If moving to full recovery, deactivate emergency mode
+        if emergency_recovery_stage == 3:
+            return emergency_shutdown_deactivate(admin)
+        
+        return True
+        
+    except Exception as e:
+        _emergency_log(f"Failed to set recovery stage: {e}", "ERROR", admin)
+        return False
+
+def emergency_shutdown_lock_user(username: str, admin: str = None):
+    """Lock a specific user during emergency shutdown."""
+    try:
+        emergency_shutdown_locked_users.add(username)
+        _emergency_log(f"User locked: {username}", "INFO", admin)
+        return True
+    except Exception as e:
+        _emergency_log(f"Failed to lock user {username}: {e}", "ERROR", admin)
+        return False
+
+def emergency_shutdown_unlock_user(username: str, admin: str = None):
+    """Unlock a specific user during emergency shutdown."""
+    try:
+        emergency_shutdown_locked_users.discard(username)
+        _emergency_log(f"User unlocked: {username}", "INFO", admin)
+        return True
+    except Exception as e:
+        _emergency_log(f"Failed to unlock user {username}: {e}", "ERROR", admin)
+        return False
+
+def _emergency_check_gate(username: str = None, operation: str = "general", superadmins=None) -> tuple[bool, str]:
+    """
+    Check if operation is allowed during emergency shutdown.
+    
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    try:
+        if not emergency_shutdown_active:
+            return True, ""
+        
+        # Superadmins can always operate (for recovery purposes)
+        if username and superadmins and username in superadmins:
+            return True, ""
+        
+        # Check if user is specifically locked
+        if username and username in emergency_shutdown_locked_users:
+            return False, "Your account is temporarily locked during emergency maintenance."
+        
+        # Check recovery stage permissions
+        if emergency_recovery_stage == 0:
+            # Full shutdown - no operations allowed
+            return False, "System is in emergency maintenance mode. All operations are temporarily disabled."
+        
+        elif emergency_recovery_stage == 1:
+            # Read-only mode - only viewing allowed
+            if operation in ['view', 'read', 'get']:
+                return True, ""
+            return False, "System is in read-only emergency mode. Only viewing is currently allowed."
+        
+        elif emergency_recovery_stage == 2:
+            # Chat-only mode - messaging allowed, no login/registration
+            if operation in ['view', 'read', 'get', 'message', 'chat']:
+                return True, ""
+            if operation in ['login', 'register', 'upload', 'settings']:
+                return False, "System is in limited emergency mode. Login and registration are temporarily disabled."
+            return False, "System is in limited emergency mode. Some features are temporarily disabled."
+        
+        elif emergency_recovery_stage == 3:
+            # Full recovery - all operations allowed
+            return True, ""
+        
+        # Default: block unknown operations during emergency
+        return False, "System is in emergency maintenance mode."
+        
+    except Exception as e:
+        _emergency_log(f"Emergency gate check failed: {e}", "ERROR")
+        # Fail safe: block operations during errors
+        return False, "System is experiencing technical difficulties."
+
+def _emergency_auto_trigger_check(get_db_func=None, db_path=None):
+    """Check for conditions that should automatically trigger emergency shutdown."""
+    try:
+        # Skip if already in emergency mode
+        if emergency_shutdown_active:
+            return
+        
+        # Check database connectivity
+        if get_db_func:
+            try:
+                db = get_db_func()
+                cur = db.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            except Exception as e:
+                _emergency_log(f"Database connectivity check failed: {e}", "ERROR")
+                emergency_shutdown_activate("DATABASE_CONNECTION_FAILURE", auto_backup=False)
+                return
+        
+        # Check memory usage (basic check)
+        try:
+            import psutil
+            memory_percent = psutil.virtual_memory().percent
+            if memory_percent > 95:  # 95% memory usage
+                _emergency_log(f"High memory usage detected: {memory_percent}%", "WARNING")
+                emergency_shutdown_activate("RESOURCE_EXHAUSTION_MEMORY", auto_backup=True)
+                return
+        except ImportError:
+            # psutil not available, skip memory check
+            pass
+        except Exception as e:
+            _emergency_log(f"Memory check failed: {e}", "WARNING")
+        
+        # Check for excessive error rates (basic implementation)
+        # This would need to be integrated with actual error tracking
+        
+    except Exception as e:
+        _emergency_log(f"Auto-trigger check failed: {e}", "ERROR")
+
+def get_emergency_status():
+    """Get current emergency shutdown status."""
+    return {
+        'active': emergency_shutdown_active,
+        'timestamp': emergency_shutdown_timestamp.isoformat() if emergency_shutdown_timestamp else None,
+        'trigger': emergency_shutdown_trigger,
+        'admin': emergency_shutdown_admin,
+        'recovery_stage': emergency_recovery_stage,
+        'locked_users': list(emergency_shutdown_locked_users),
+        'log_entries': len(emergency_shutdown_log),
+        'recent_logs': emergency_shutdown_log[-10:] if emergency_shutdown_log else [],
+        'snapshot': emergency_shutdown_snapshot
+    }
+
+def get_emergency_logs(page=1, per_page=50):
+    """Get emergency shutdown logs with pagination."""
+    try:
+        # Calculate pagination
+        total_logs = len(emergency_shutdown_log)
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        
+        # Get logs (most recent first)
+        logs = list(reversed(emergency_shutdown_log))[start_idx:end_idx]
+        
+        return {
+            'logs': logs,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total_logs,
+                'pages': (total_logs + per_page - 1) // per_page
+            }
+        }
+        
+    except Exception as e:
+        return {'error': f'Failed to get logs: {e}'}
+
+# ============================================================================
+# END EMERGENCY SHUTDOWN SYSTEM
+# ============================================================================
+
+
 SUPPORTED_LANGUAGES = [
     ("en", "English"),
     ("es", "Spanish"),
@@ -2194,7 +2616,7 @@ def _enforce_bans_global():
     try:
         # Emergency shutdown auto-trigger check (periodic)
         try:
-            emergency_shutdown._emergency_auto_trigger_check(
+            _emergency_auto_trigger_check(
                 get_db_func=get_db, db_path=DB_PATH
             )
         except Exception:
@@ -2298,13 +2720,13 @@ def _clear_downtime_ips():
 def _is_emergency_shutdown() -> bool:
     """Return True if emergency shutdown is active."""
     try:
-        return emergency_shutdown.emergency_shutdown_active
+        return emergency_shutdown_active
     except Exception:
         return False
 def _emergency_write_block(user: str | None = None) -> bool:
     """Return True if writes should be blocked for this user due to emergency shutdown."""
     try:
-        allowed, reason = emergency_shutdown._emergency_check_gate(
+        allowed, reason = _emergency_check_gate(
             username=user, 
             operation="message", 
             superadmins=SUPERADMINS
@@ -2590,7 +3012,7 @@ def api_emergency_shutdown_status():
         if not (is_admin(username) or is_superadmin(username)):
             return jsonify({'error': 'Unauthorized'}), 403
         
-        status = emergency_shutdown.get_emergency_status()
+        status = get_emergency_status()
         
         # Include snapshot for superadmins only
         if not is_superadmin(username):
@@ -2620,9 +3042,9 @@ def api_emergency_shutdown_activate():
             try:
                 emit('emergency_notification', {'message': message}, broadcast=True)
             except Exception as e:
-                emergency_shutdown._emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
+                _emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
         
-        success = emergency_shutdown.emergency_shutdown_activate(
+        success = emergency_shutdown_activate(
             trigger=trigger,
             admin=username,
             auto_backup=auto_backup,
@@ -2658,9 +3080,9 @@ def api_emergency_shutdown_deactivate():
             try:
                 emit('emergency_notification', {'message': message}, broadcast=True)
             except Exception as e:
-                emergency_shutdown._emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
+                _emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
         
-        success = emergency_shutdown.emergency_shutdown_deactivate(
+        success = emergency_shutdown_deactivate(
             admin=username,
             set_setting_func=set_setting,
             notify_func=notify_all_users
@@ -2690,7 +3112,7 @@ def api_emergency_shutdown_set_stage():
         if not isinstance(stage, int) or stage < 0 or stage > 3:
             return jsonify({'error': 'Invalid stage - must be 0-3'}), 400
         
-        success = emergency_shutdown.emergency_shutdown_set_stage(stage, username)
+        success = emergency_shutdown_set_stage(stage, username)
         
         if success:
             return jsonify({'ok': True, 'message': f'Recovery stage set to {stage}'})
@@ -2720,7 +3142,7 @@ def api_emergency_shutdown_lock_user():
         if target_user in SUPERADMINS:
             return jsonify({'error': 'Cannot lock superadmin'}), 400
         
-        success = emergency_shutdown.emergency_shutdown_lock_user(target_user, username)
+        success = emergency_shutdown_lock_user(target_user, username)
         
         if success:
             return jsonify({'ok': True, 'message': f'User {target_user} locked'})
@@ -2746,7 +3168,7 @@ def api_emergency_shutdown_unlock_user():
         if not target_user:
             return jsonify({'error': 'Username required'}), 400
         
-        success = emergency_shutdown.emergency_shutdown_unlock_user(target_user, username)
+        success = emergency_shutdown_unlock_user(target_user, username)
         
         if success:
             return jsonify({'ok': True, 'message': f'User {target_user} unlocked'})
@@ -2770,7 +3192,7 @@ def api_emergency_shutdown_logs():
         page = max(1, int(request.args.get('page', 1)))
         per_page = max(1, min(100, int(request.args.get('per_page', 50))))
         
-        result = emergency_shutdown.get_emergency_logs(page, per_page)
+        result = get_emergency_logs(page, per_page)
         
         if 'error' in result:
             return jsonify({'error': result['error']}), 500
@@ -5784,7 +6206,7 @@ def register():
     
     # Emergency shutdown check
     try:
-        allowed, reason = emergency_shutdown._emergency_check_gate(
+        allowed, reason = _emergency_check_gate(
             username=None, operation="register", superadmins=SUPERADMINS
         )
         if not allowed:
@@ -5872,7 +6294,7 @@ def login():
     
     # Emergency shutdown check
     try:
-        allowed, reason = emergency_shutdown._emergency_check_gate(
+        allowed, reason = _emergency_check_gate(
             username=None, operation="login", superadmins=SUPERADMINS
         )
         if not allowed:
@@ -8681,27 +9103,141 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Mobile responsive enhancements */
-      @media (max-width: 768px) {
-        .app { flex-direction: column; gap: 8px !important; }
+      /* Enhanced Mobile & Tablet Responsive Design */
+      
+      /* Small phones (up to 480px) */
+      @media (max-width: 480px) {
+        .app { flex-direction: column; gap: 4px !important; }
         #leftbar, #rightbar { display:none; }
         body.show-leftbar #leftbar,
-        body.show-rightbar #rightbar { display:block; position:fixed; top:0; bottom:56px; left:0; right:0; width:auto; max-width:none; padding:12px; background:var(--bg); z-index:9997; overflow:auto; border:none; }
-        #main { order: 2; }
-        #mobileNav { display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; }
-        #mobileNav button { flex:1; background:transparent; color:#fff; border:none; font-size:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; }
+        body.show-rightbar #rightbar { 
+          display:block; position:fixed; top:0; bottom:56px; left:0; right:0; 
+          width:auto; max-width:none; padding:8px; background:var(--bg); 
+          z-index:9997; overflow:auto; border:none; 
+        }
+        #main { order: 2; padding: 4px; }
+        #mobileNav { 
+          display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; 
+          background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; 
+        }
+        #mobileNav button { 
+          flex:1; background:transparent; color:#fff; border:none; font-size:12px; 
+          display:flex; flex-direction:column; align-items:center; justify-content:center; 
+          gap:2px; min-height:44px; padding:4px 2px;
+        }
         #mobileBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9996; }
         body.show-leftbar #mobileBackdrop,
         body.show-rightbar #mobileBackdrop { display:block; }
-        header { position:sticky; top:0; background:var(--bg); z-index:5; padding-bottom:6px; }
-        .chat { min-height: calc(100vh - 56px - 160px); }
-        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:6px 0; }
-        #textInput { font-size:16px; padding:12px; min-height:44px; }
-        #sendForm button { padding:10px 12px; }
-        #fileInput { font-size:14px; }
-        #onlineBtn { padding:6px 8px; }
-        body { padding-bottom: 56px; }
+        header { position:sticky; top:0; background:var(--bg); z-index:5; padding:4px 8px; }
+        .chat { min-height: calc(100vh - 56px - 140px); padding: 4px; }
+        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:8px 4px; }
+        #textInput { font-size:16px; padding:12px 8px; min-height:44px; border-radius:8px; }
+        #sendForm button { padding:12px 16px; min-height:44px; border-radius:8px; font-size:14px; }
+        #fileInput { font-size:14px; padding:8px; }
+        #onlineBtn { padding:8px 12px; min-height:44px; font-size:14px; }
+        body { padding-bottom: 56px; font-size: 14px; }
+        
+        /* Better button spacing for touch */
+        button, input[type="button"], input[type="submit"] {
+          min-height: 44px;
+          min-width: 44px;
+          padding: 8px 12px;
+          margin: 2px;
+        }
+        
+        /* Improved text readability */
+        .message { font-size: 14px; line-height: 1.4; padding: 8px; }
+        .username { font-size: 13px; font-weight: 600; }
+        
+        /* Better sidebar on small screens */
+        #leftbar { padding: 8px; }
+        #leftbar button { font-size: 12px; padding: 6px 8px; }
       }
+      
+      /* Regular phones and small tablets (481px to 768px) */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .app { flex-direction: column; gap: 6px !important; }
+        #leftbar, #rightbar { display:none; }
+        body.show-leftbar #leftbar,
+        body.show-rightbar #rightbar { 
+          display:block; position:fixed; top:0; bottom:56px; left:0; right:0; 
+          width:auto; max-width:none; padding:12px; background:var(--bg); 
+          z-index:9997; overflow:auto; border:none; 
+        }
+        #main { order: 2; padding: 8px; }
+        #mobileNav { 
+          display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; 
+          background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; 
+        }
+        #mobileNav button { 
+          flex:1; background:transparent; color:#fff; border:none; font-size:14px; 
+          display:flex; flex-direction:column; align-items:center; justify-content:center; 
+          gap:4px; min-height:44px;
+        }
+        #mobileBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9996; }
+        body.show-leftbar #mobileBackdrop,
+        body.show-rightbar #mobileBackdrop { display:block; }
+        header { position:sticky; top:0; background:var(--bg); z-index:5; padding:6px 12px; }
+        .chat { min-height: calc(100vh - 56px - 160px); padding: 8px; }
+        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:8px; }
+        #textInput { font-size:16px; padding:12px; min-height:44px; }
+        #sendForm button { padding:12px 16px; min-height:44px; }
+        #fileInput { font-size:14px; }
+        #onlineBtn { padding:8px 12px; }
+        body { padding-bottom: 56px; }
+        
+        /* Touch-friendly buttons */
+        button, input[type="button"], input[type="submit"] {
+          min-height: 44px;
+          padding: 8px 16px;
+        }
+      }
+      
+      /* Tablets and small laptops (769px to 1024px) */
+      @media (min-width: 769px) and (max-width: 1024px) {
+        .app { gap: 12px !important; }
+        #leftbar { width: 200px; min-width: 200px; }
+        #rightbar { width: 200px; min-width: 200px; }
+        #main { flex: 1; padding: 8px; }
+        .chat { padding: 8px; }
+        #textInput { font-size: 15px; }
+        
+        /* Hide mobile nav on tablets */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0; }
+      }
+      
+      /* Large tablets and laptops (1025px to 1440px) */
+      @media (min-width: 1025px) and (max-width: 1440px) {
+        .app { gap: 16px !important; max-width: 1200px; margin: 0 auto; }
+        #leftbar { width: 240px; min-width: 240px; }
+        #rightbar { width: 240px; min-width: 240px; }
+        #main { flex: 1; padding: 12px; }
+        .chat { padding: 12px; }
+      }
+      
+      /* Large screens (1441px+) */
+      @media (min-width: 1441px) {
+        .app { gap: 20px !important; max-width: 1400px; margin: 0 auto; }
+        #leftbar { width: 280px; min-width: 280px; }
+        #rightbar { width: 280px; min-width: 280px; }
+        #main { flex: 1; padding: 16px; }
+        .chat { padding: 16px; }
+      }
+      
+      /* Landscape orientation optimizations */
+      @media (max-width: 768px) and (orientation: landscape) {
+        .chat { min-height: calc(100vh - 56px - 120px); }
+        .form-row { padding: 4px 8px; }
+        header { padding: 4px 8px; }
+      }
+      
+      /* High DPI displays */
+      @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+        button, input { border-width: 0.5px; }
+        .message { border-width: 0.5px; }
+      }
+
       /* Composer layout */
       #sendForm .form-row { display:flex; gap:8px; align-items:flex-start; }
       #textInput { flex:1; width:100%; border:1px solid var(--border); border-radius:10px; resize:vertical; background:var(--card); color:var(--primary); padding:10px 12px; box-shadow:0 1px 0 rgba(0,0,0,0.02) inset; }
@@ -12849,7 +13385,7 @@ if __name__ == "__main__":
         # Add global exception handler for critical errors
         def handle_critical_exception(exc_type, exc_value, exc_traceback):
             try:
-                emergency_shutdown.emergency_shutdown_activate(
+                emergency_shutdown_activate(
                     trigger="SYSTEM_CRITICAL_ERROR",
                     admin="SYSTEM",
                     auto_backup=True,
@@ -12874,7 +13410,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Critical error: {e}")
         try:
-            emergency_shutdown.emergency_shutdown_activate(
+            emergency_shutdown_activate(
                 trigger="SYSTEM_STARTUP_ERROR",
                 admin="SYSTEM",
                 auto_backup=True

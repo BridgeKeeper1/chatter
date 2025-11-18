@@ -53,6 +53,9 @@ import requests
 import difflib
 import zlib
 
+import emergency_shutdown
+
+import emergency_shutdown
 SUPPORTED_LANGUAGES = [
     ("en", "English"),
     ("es", "Spanish"),
@@ -2189,6 +2192,13 @@ def _session_user_valid() -> bool:
 @app.before_request
 def _enforce_bans_global():
     try:
+        # Emergency shutdown auto-trigger check (periodic)
+        try:
+            emergency_shutdown._emergency_auto_trigger_check(
+                get_db_func=get_db, db_path=DB_PATH
+            )
+        except Exception:
+            pass
         ep = (request.endpoint or '')
         if ep and (ep.startswith('static') or ep in ('healthcheck',)):
             return
@@ -2286,40 +2296,33 @@ def _clear_downtime_ips():
         pass
 
 def _is_emergency_shutdown() -> bool:
-    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
-
-    This is used to enforce a global emergency read-only mode.
-    """
+    """Return True if emergency shutdown is active."""
     try:
-        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
+        return emergency_shutdown.emergency_shutdown_active
     except Exception:
         return False
-
 def _emergency_write_block(user: str | None = None) -> bool:
-    """Return True if writes should be blocked for this user due to emergency shutdown.
-
-    Superadmins are allowed to continue making changes so they can manage recovery.
-    """
+    """Return True if writes should be blocked for this user due to emergency shutdown."""
     try:
-        if not _is_emergency_shutdown():
-            return False
-        # Allow superadmins to keep writing during emergency
-        try:
-            if user and is_superadmin(user):
-                return False
-        except Exception:
-            pass
-        # Best-effort notification to the user; do not persist
-        try:
-            if user:
-                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
-        except Exception:
-            pass
-        return True
-    except Exception:
+        allowed, reason = emergency_shutdown._emergency_check_gate(
+            username=user, 
+            operation="message", 
+            superadmins=SUPERADMINS
+        )
+        
+        if not allowed:
+            # Notify user of the block reason
+            try:
+                if user and reason:
+                    emit("system_message", reason, room=f"user:{user}")
+            except Exception:
+                pass
+            return True
+        
         return False
-
-@app.before_request
+    except Exception:
+        # Fail safe: block writes during errors
+        return True
 def _downtime_gate():
     try:
         # Emergency shutdown piggybacks on downtime gate: either flag triggers the gate.
@@ -2576,6 +2579,207 @@ def api_whoami():
         return jsonify({ 'session': sess, 'x_dbx_user': hdr_u, 'q_dbx_user': q_u, 'cookie_dbx_user': c_u, 'effective': eff, 'is_superadmin': bool(eff in SUPERADMINS) })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+# Emergency Shutdown API Routes
+@app.route('/api/emergency/status')
+def api_emergency_shutdown_status():
+    """Get current emergency shutdown status."""
+    try:
+        username = session.get('username', '')
+        
+        # Only admins and superadmins can view status
+        if not (is_admin(username) or is_superadmin(username)):
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        status = emergency_shutdown.get_emergency_status()
+        
+        # Include snapshot for superadmins only
+        if not is_superadmin(username):
+            status.pop('snapshot', None)
+        
+        return jsonify({'ok': True, 'status': status})
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get status: {e}'}), 500
+
+@app.route('/api/emergency/activate', methods=['POST'])
+def api_emergency_shutdown_activate():
+    """Activate emergency shutdown (superadmin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only superadmins can activate emergency shutdown
+        if not is_superadmin(username):
+            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
+        
+        data = request.get_json() or {}
+        trigger = data.get('trigger', 'ADMIN_COMMAND')
+        auto_backup = data.get('auto_backup', True)
+        
+        # Helper function to notify all users
+        def notify_all_users(message):
+            try:
+                emit('emergency_notification', {'message': message}, broadcast=True)
+            except Exception as e:
+                emergency_shutdown._emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
+        
+        success = emergency_shutdown.emergency_shutdown_activate(
+            trigger=trigger,
+            admin=username,
+            auto_backup=auto_backup,
+            db_path=DB_PATH,
+            get_db_func=get_db,
+            get_setting_func=get_setting,
+            set_setting_func=set_setting,
+            connected_sockets=connected_sockets,
+            spam_strikes=spam_strikes,
+            notify_func=notify_all_users
+        )
+        
+        if success:
+            return jsonify({'ok': True, 'message': 'Emergency shutdown activated'})
+        else:
+            return jsonify({'error': 'Failed to activate emergency shutdown'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to activate: {e}'}), 500
+
+@app.route('/api/emergency/deactivate', methods=['POST'])
+def api_emergency_shutdown_deactivate():
+    """Deactivate emergency shutdown (superadmin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only superadmins can deactivate emergency shutdown
+        if not is_superadmin(username):
+            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
+        
+        # Helper function to notify all users
+        def notify_all_users(message):
+            try:
+                emit('emergency_notification', {'message': message}, broadcast=True)
+            except Exception as e:
+                emergency_shutdown._emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
+        
+        success = emergency_shutdown.emergency_shutdown_deactivate(
+            admin=username,
+            set_setting_func=set_setting,
+            notify_func=notify_all_users
+        )
+        
+        if success:
+            return jsonify({'ok': True, 'message': 'Emergency shutdown deactivated'})
+        else:
+            return jsonify({'error': 'Failed to deactivate emergency shutdown'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to deactivate: {e}'}), 500
+
+@app.route('/api/emergency/stage', methods=['POST'])
+def api_emergency_shutdown_set_stage():
+    """Set recovery stage (superadmin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only superadmins can set recovery stage
+        if not is_superadmin(username):
+            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
+        
+        data = request.get_json() or {}
+        stage = data.get('stage', 0)
+        
+        if not isinstance(stage, int) or stage < 0 or stage > 3:
+            return jsonify({'error': 'Invalid stage - must be 0-3'}), 400
+        
+        success = emergency_shutdown.emergency_shutdown_set_stage(stage, username)
+        
+        if success:
+            return jsonify({'ok': True, 'message': f'Recovery stage set to {stage}'})
+        else:
+            return jsonify({'error': 'Failed to set recovery stage'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to set stage: {e}'}), 500
+
+@app.route('/api/emergency/lock_user', methods=['POST'])
+def api_emergency_shutdown_lock_user():
+    """Lock a user during emergency (admin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only admins and superadmins can lock users
+        if not (is_admin(username) or is_superadmin(username)):
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        data = request.get_json() or {}
+        target_user = data.get('username', '').strip()
+        
+        if not target_user:
+            return jsonify({'error': 'Username required'}), 400
+        
+        # Prevent locking superadmins
+        if target_user in SUPERADMINS:
+            return jsonify({'error': 'Cannot lock superadmin'}), 400
+        
+        success = emergency_shutdown.emergency_shutdown_lock_user(target_user, username)
+        
+        if success:
+            return jsonify({'ok': True, 'message': f'User {target_user} locked'})
+        else:
+            return jsonify({'error': 'Failed to lock user'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to lock user: {e}'}), 500
+
+@app.route('/api/emergency/unlock_user', methods=['POST'])
+def api_emergency_shutdown_unlock_user():
+    """Unlock a user during emergency (admin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only admins and superadmins can unlock users
+        if not (is_admin(username) or is_superadmin(username)):
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        data = request.get_json() or {}
+        target_user = data.get('username', '').strip()
+        
+        if not target_user:
+            return jsonify({'error': 'Username required'}), 400
+        
+        success = emergency_shutdown.emergency_shutdown_unlock_user(target_user, username)
+        
+        if success:
+            return jsonify({'ok': True, 'message': f'User {target_user} unlocked'})
+        else:
+            return jsonify({'error': 'Failed to unlock user'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Failed to unlock user: {e}'}), 500
+
+@app.route('/api/emergency/logs')
+def api_emergency_shutdown_logs():
+    """Get emergency shutdown logs (admin only)."""
+    try:
+        username = session.get('username', '')
+        
+        # Only admins and superadmins can view logs
+        if not (is_admin(username) or is_superadmin(username)):
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        # Get pagination parameters
+        page = max(1, int(request.args.get('page', 1)))
+        per_page = max(1, min(100, int(request.args.get('per_page', 50))))
+        
+        result = emergency_shutdown.get_emergency_logs(page, per_page)
+        
+        if 'error' in result:
+            return jsonify({'error': result['error']}), 500
+        
+        return jsonify({'ok': True, **result})
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get logs: {e}'}), 500
+
 
 @app.route('/smite', methods=['GET','POST'])
 def api_smite():
@@ -5578,6 +5782,15 @@ def register():
     if "user_id" in session:
         return redirect(url_for("chat"))
     
+    # Emergency shutdown check
+    try:
+        allowed, reason = emergency_shutdown._emergency_check_gate(
+            username=None, operation="register", superadmins=SUPERADMINS
+        )
+        if not allowed:
+            return render_template_string(REGISTER_HTML, error=reason), 503
+    except Exception:
+        pass
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(REGISTER_HTML, error="Your IP address is banned"), 403
@@ -5657,6 +5870,15 @@ def login():
     if "user_id" in session:
         return redirect(url_for("chat"))
     
+    # Emergency shutdown check
+    try:
+        allowed, reason = emergency_shutdown._emergency_check_gate(
+            username=None, operation="login", superadmins=SUPERADMINS
+        )
+        if not allowed:
+            return render_template_string(LOGIN_HTML, error=reason), 503
+    except Exception:
+        pass
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(LOGIN_HTML, error="Your IP address is banned"), 403
@@ -12618,8 +12840,45 @@ def inject():
 
 # Run the application
 if __name__ == "__main__":
-    with app.app_context():
-        init_db()
-        recover_failed_username_changes()  # Recover from any failed username changes
-        load_banned_ips()
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    try:
+        with app.app_context():
+            init_db()
+            recover_failed_username_changes()  # Recover from any failed username changes
+            load_banned_ips()
+        
+        # Add global exception handler for critical errors
+        def handle_critical_exception(exc_type, exc_value, exc_traceback):
+            try:
+                emergency_shutdown.emergency_shutdown_activate(
+                    trigger="SYSTEM_CRITICAL_ERROR",
+                    admin="SYSTEM",
+                    auto_backup=True,
+                    db_path=DB_PATH,
+                    get_db_func=get_db,
+                    get_setting_func=get_setting,
+                    set_setting_func=set_setting,
+                    connected_sockets=connected_sockets,
+                    spam_strikes=spam_strikes
+                )
+            except Exception:
+                pass
+            # Re-raise the original exception
+            raise exc_value
+        
+        import sys
+        sys.excepthook = handle_critical_exception
+        
+        socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)
+    except KeyboardInterrupt:
+        print("\nShutdown requested by user")
+    except Exception as e:
+        print(f"Critical error: {e}")
+        try:
+            emergency_shutdown.emergency_shutdown_activate(
+                trigger="SYSTEM_STARTUP_ERROR",
+                admin="SYSTEM",
+                auto_backup=True
+            )
+        except Exception:
+            pass
+        raise

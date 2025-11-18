@@ -101,8 +101,8 @@ def _emergency_create_snapshot(get_db_func, get_setting_func, connected_sockets,
             'system_settings': {},
             'database_stats': {},
             'socket_connections': len(connected_sockets),
-            'spam_strikes': dict(spam_strikes),
-            'maintenance_mode': get_setting_func('MAINTENANCE_MODE', '0')
+            'socket_connections': len(connected_sockets),
+            'spam_short_message_counts': dict(spam_short_message_counts),
         }
         
         # Capture active users (last 5 minutes)
@@ -2145,6 +2145,11 @@ spam_gdm = defaultdict(list)     # username -> [ts,...]
 spam_message_hashes = defaultdict(list)  # username -> [(hash, timestamp), ...]
 spam_recent_messages = defaultdict(list)  # username -> [(text, timestamp), ...]
 
+# Short message frequency tracking (for messages < 3 chars)
+spam_short_message_counts = defaultdict(lambda: defaultdict(list))  # username -> {message: [timestamps]}
+spam_short_message_whitelist = {'y', 'n', 'k', 'ok', 'hi', 'no', 'yes', 'lol', 'omg', 'wtf', 'brb', 'ttyl', 'thx', 'ty', 'np', 'gg', 'gl', 'hf'}
+
+
 # Progressive sanction system
 spam_strikes = defaultdict(lambda: {'count': 0, 'violations': [], 'last_violation': 0})
 spam_slow_until = defaultdict(float)   # username -> unix timestamp until slow-mode expires
@@ -2167,14 +2172,51 @@ def _spam_create_message_hash(text: str) -> str:
     """Create a hash fingerprint of message content for duplicate detection."""
     # Normalize text: lowercase, remove extra whitespace, strip punctuation
     normalized = re.sub(r'[^\w\s]', '', text.lower())
+
+def _spam_short_message_frequency_check(username: str, text: str, max_frequency: int = 5, timeframe: int = 60) -> tuple[bool, str]:
+    """Check frequency of short messages (< 3 chars) to prevent spam while allowing normal use."""
+    if len(text.strip()) >= 3:
+        return True, ""  # Not a short message, skip this check
+    
+    normalized_text = text.strip().lower()
+    
+    # Whitelist common short messages that should never be blocked
+    if normalized_text in spam_short_message_whitelist:
+        return True, ""
+    
+    now = time.time()
+    user_short_counts = spam_short_message_counts[username]
+    
+    # Clean old timestamps for this message
+    user_short_counts[normalized_text] = [ts for ts in user_short_counts[normalized_text] if now - ts < timeframe]
+    
+    # Check if user has sent this short message too frequently
+    if len(user_short_counts[normalized_text]) >= max_frequency:
+        oldest_in_window = min(user_short_counts[normalized_text])
+        remaining_time = int(timeframe - (now - oldest_in_window))
+        return False, f"Too many identical short messages. Please wait {remaining_time} seconds before sending \"{text}\" again."
+    
+    # Record this message
+    user_short_counts[normalized_text].append(now)
+    return True, ""
+
+
     normalized = re.sub(r'\s+', ' ', normalized).strip()
     
     # Create hash
     return hashlib.md5(normalized.encode('utf-8')).hexdigest()
 
-def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) -> tuple[bool, str]:
-    """2. Duplicate & Near-Duplicate Detection - Check for repeated content."""
+def _spam_duplicate_detection(username: str, text: str, timeframe: int = 60) -> tuple[bool, str]:
+    """2. Duplicate & Near-Duplicate Detection - Check for repeated content.
+    
+    Modified to skip short messages (< 3 chars) and use shorter timeframe for better UX.
+    Short messages are handled by _spam_short_message_frequency_check instead.
+    """
     if not text.strip():
+        return True, ""
+    
+    # Skip duplicate detection for short messages - they're handled by frequency check
+    if len(text.strip()) < 3:
         return True, ""
     
     now = time.time()
@@ -2189,19 +2231,22 @@ def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) ->
         if stored_hash == message_hash and now - timestamp < timeframe:
             return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
     
-    # Check for near-duplicates using fuzzy matching
-    user_messages = spam_recent_messages[username]
-    spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
+    # Check for near-duplicates using fuzzy matching (only for longer messages)
+    if len(text.strip()) >= 10:  # Only do fuzzy matching for longer messages
+        user_messages = spam_recent_messages[username]
+        spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
+        
+        for stored_msg, timestamp in spam_recent_messages[username]:
+            if now - timestamp < timeframe and len(stored_msg.strip()) >= 10:
+                similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
+                if similarity > 0.85:  # 85% similarity threshold
+                    return False, f"Very similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
+        
+        # Store this message for fuzzy matching
+        spam_recent_messages[username].append((text, now))
     
-    for stored_msg, timestamp in spam_recent_messages[username]:
-        if now - timestamp < timeframe:
-            similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
-            if similarity > 0.85:  # 85% similarity threshold
-                return False, f"Very similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
-    
-    # Store this message
+    # Store hash for exact duplicate detection
     spam_message_hashes[username].append((message_hash, now))
-    spam_recent_messages[username].append((text, now))
     
     return True, ""
 
@@ -2470,8 +2515,14 @@ def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachm
             else:
                 return False, reason, None
         
-        # 2. Duplicate & Near-Duplicate Detection
-        allowed, reason = _spam_duplicate_detection(username, text)
+        # 2. Duplicate # 1.5. Short Message Frequency Check (for messages < 3 chars) Near-Duplicate Detection
+        # 1.5. Short Message Frequency Check (for messages < 3 chars)
+        allowed, reason = _spam_short_message_frequency_check(username, text)
+        if not allowed:
+            _spam_record_violation(username, "short_message_spam", 1)
+            return False, reason, None
+
+        # 2. Duplicate         allowed, reason = _spam_duplicate_detection(username, text) Near-Duplicate Detection
         if not allowed:
             _spam_record_violation(username, "duplicate_content", 2)
             return False, reason, None

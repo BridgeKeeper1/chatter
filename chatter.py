@@ -8792,6 +8792,210 @@ def _current_typing_list(exclude=None):
         users = [u for u in users if u != exclude]
     return users
 
+
+# Poll System
+@socketio.on("create_poll")
+def on_create_poll(data):
+    username = session.get("username")
+    if not username:
+        return
+    
+    try:
+        if _emergency_write_block(username):
+            return
+    except Exception:
+        pass
+    
+    # Validate user session
+    try:
+        if not _session_user_valid():
+            try: socketio.server.disconnect(request.sid)
+            except Exception: pass
+            return
+    except Exception:
+        return
+    
+    # Extract poll data
+    question = (data or {}).get("question", "").strip()
+    options = (data or {}).get("options", [])
+    mode = (data or {}).get("mode", "public")
+    channel_id = (data or {}).get("channel_id", "public")
+    
+    # Validate poll data
+    if not question or len(question) > 500:
+        emit("poll_error", {"error": "Poll question must be 1-500 characters"})
+        return
+    
+    if not isinstance(options, list) or len(options) < 2 or len(options) > 10:
+        emit("poll_error", {"error": "Poll must have 2-10 options"})
+        return
+    
+    # Validate options
+    clean_options = []
+    for opt in options:
+        if isinstance(opt, str) and opt.strip():
+            clean_opt = opt.strip()[:200]  # Max 200 chars per option
+            if clean_opt not in clean_options:  # No duplicates
+                clean_options.append(clean_opt)
+    
+    if len(clean_options) < 2:
+        emit("poll_error", {"error": "Need at least 2 unique options"})
+        return
+    
+    # Check user permissions (placeholder - will add admin controls later)
+    # For now, allow all users to create polls
+    
+    # Store poll in database
+    db = get_db()
+    cur = db.cursor()
+    
+    # Create polls table if not exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS polls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            question TEXT NOT NULL,
+            options TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            locked INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Create votes table if not exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS poll_votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            poll_id INTEGER NOT NULL,
+            user TEXT NOT NULL,
+            option_index INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(poll_id, user),
+            FOREIGN KEY(poll_id) REFERENCES polls(id)
+        )
+    """)
+    
+    # Insert poll
+    import json
+    now = int(time.time())
+    cur.execute("""
+        INSERT INTO polls (creator, channel, channel_id, question, options, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (username, mode, channel_id, question, json.dumps(clean_options), now))
+    
+    poll_id = cur.lastrowid
+    db.commit()
+    
+    # Create poll message data
+    poll_data = {
+        "id": poll_id,
+        "creator": username,
+        "question": question,
+        "options": clean_options,
+        "votes": {},  # Empty votes initially
+        "created_at": now
+    }
+    
+    # Broadcast poll based on mode
+    if mode == "public":
+        emit("new_poll", poll_data, room="chat_room")
+    elif mode == "dm" and channel_id:
+        # Send to both users in DM
+        emit("new_poll", poll_data, room=f"user:{username}")
+        emit("new_poll", poll_data, room=f"user:{channel_id}")
+    elif mode == "gdm" and channel_id:
+        # Send to all GDM members
+        try:
+            tid = int(channel_id)
+            cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
+            members = [r[0] for r in cur.fetchall()]
+            for member in members:
+                emit("new_poll", poll_data, room=f"user:{member}")
+        except Exception:
+            pass
+
+@socketio.on("poll_vote")
+def on_poll_vote(data):
+    username = session.get("username")
+    if not username:
+        return
+    
+    try:
+        poll_id = int((data or {}).get("poll_id", 0))
+        option_index = int((data or {}).get("option_index", -1))
+    except Exception:
+        emit("poll_error", {"error": "Invalid vote data"})
+        return
+    
+    if poll_id <= 0 or option_index < 0:
+        emit("poll_error", {"error": "Invalid vote data"})
+        return
+    
+    db = get_db()
+    cur = db.cursor()
+    
+    # Get poll info
+    cur.execute("SELECT creator, channel, channel_id, question, options, locked FROM polls WHERE id=?", (poll_id,))
+    poll_row = cur.fetchone()
+    if not poll_row:
+        emit("poll_error", {"error": "Poll not found"})
+        return
+    
+    creator, channel, channel_id, question, options_json, locked = poll_row
+    
+    if locked:
+        emit("poll_error", {"error": "Poll is closed"})
+        return
+    
+    import json
+    try:
+        options = json.loads(options_json)
+    except Exception:
+        emit("poll_error", {"error": "Poll data corrupted"})
+        return
+    
+    if option_index >= len(options):
+        emit("poll_error", {"error": "Invalid option"})
+        return
+    
+    # Record vote (replace existing vote if any)
+    now = int(time.time())
+    cur.execute("""
+        INSERT OR REPLACE INTO poll_votes (poll_id, user, option_index, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (poll_id, username, option_index, now))
+    db.commit()
+    
+    # Get updated vote counts
+    cur.execute("SELECT option_index, COUNT(*) FROM poll_votes WHERE poll_id=? GROUP BY option_index", (poll_id,))
+    vote_counts = {}
+    for opt_idx, count in cur.fetchall():
+        vote_counts[opt_idx] = count
+    
+    # Broadcast vote update
+    vote_data = {
+        "poll_id": poll_id,
+        "votes": vote_counts,
+        "voter": username,
+        "option_index": option_index
+    }
+    
+    if channel == "public":
+        emit("poll_vote_update", vote_data, room="chat_room")
+    elif channel == "dm":
+        emit("poll_vote_update", vote_data, room=f"user:{creator}")
+        emit("poll_vote_update", vote_data, room=f"user:{channel_id}")
+    elif channel == "gdm":
+        try:
+            tid = int(channel_id)
+            cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
+            members = [r[0] for r in cur.fetchall()]
+            for member in members:
+                emit("poll_vote_update", vote_data, room=f"user:{member}")
+        except Exception:
+            pass
 # HTML Templates (unchanged)
 BASE_CSS = """
 :root {
@@ -9825,6 +10029,7 @@ CHAT_HTML = """
                 <div class="form-row">
                     <textarea id="textInput" rows="2" placeholder="Type a message..." autocomplete="off" style="resize:vertical"></textarea>
                     <input id="fileInput" class="file-input" type="file">
+                    <button id="pollBtn" type="button" title="Create Poll">📊</button>
                     <button type="submit">Send</button>
                 </div>
             </form>
@@ -9838,6 +10043,40 @@ CHAT_HTML = """
           <button id="closePinsOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
+      </div>
+    </div>
+
+    <!-- Poll Creation Modal -->
+    <div id="pollModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10008;overflow:auto;">
+      <div style="position:relative;max-width:520px;margin:80px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
+          <strong>📊 Create Poll</strong>
+          <button id="closePollModal" type="button" style="padding:6px 10px">✕</button>
+        </div>
+        <div style="padding:16px;color:var(--primary)">
+          <div style="margin-bottom:12px">
+            <label style="display:block;margin-bottom:4px;font-weight:600">Poll Question:</label>
+            <input id="pollQuestion" type="text" placeholder="What would you like to ask?" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--primary)">
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;margin-bottom:8px;font-weight:600">Options:</label>
+            <div id="pollOptions">
+              <div class="poll-option-input" style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="text" placeholder="Option 1" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer" disabled>✕</button>
+              </div>
+              <div class="poll-option-input" style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="text" placeholder="Option 2" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>
+              </div>
+            </div>
+            <button id="addPollOption" type="button" style="padding:6px 12px;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;margin-top:6px">+ Add Option</button>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button id="cancelPoll" type="button" style="padding:8px 16px;background:var(--muted);color:var(--primary);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
+            <button id="createPoll" type="button" style="padding:8px 16px;background:var(--accent);color:white;border:none;border-radius:6px;cursor:pointer">Create Poll</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -11789,9 +12028,9 @@ CHAT_HTML = """
               if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); }
             } catch(e) {}
 
-            // Add context menu for message actions
-            if (isAdmin || m.username === me) {
-                d.addEventListener('contextmenu', ev => {
+            // Add context menu for message actions - now available to all users
+            // Allow all users to access context menu
+            d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
                     
@@ -11834,21 +12073,28 @@ CHAT_HTML = """
                         );
                     }
                     if (canEdit) {
+                        const canModifyGDM = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyGDM) {
                         contextMenu.appendChild(makeItem('✏ Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('edit_message', { id: m.id, text: txt }); });
                         }));
                     }
+                    }
 
                     // Reply
                     contextMenu.appendChild(makeItem('↩ Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
-                    // Delete item
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => {
+                    // Delete item - only for admins/authors
+                    if (isAdmin || m.username === me) {
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
+                    }
+                    }
                     // DM Sender
                     if (m.username && m.username !== me) {
                         contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
@@ -11863,7 +12109,7 @@ CHAT_HTML = """
                         }
                     }, {once: true});
                 });
-            }
+
 
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
@@ -11907,9 +12153,9 @@ CHAT_HTML = """
                 ${attachmentHtml}
             `;
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
-            // Right-click for edit/delete if author/admin
-            const canModify = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Right-click context menu - Reply available to all users
+            // Allow all users to access context menu, but restrict edit/delete
+            // Context menu available to all users
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11933,13 +12179,18 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit DM', () => {
+                    const canModifyDM = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyDM) {
+                        contextMenu.appendChild(makeItem('✏ Edit DM', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    if (canModifyDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11985,9 +12236,9 @@ CHAT_HTML = """
                 ${attachmentHtml}
             `;
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
-            // Context menu for edit/delete (author/admin)
+            // Context menu - Reply available to all users
             const canModify = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Context menu available to all users
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -12011,13 +12262,18 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit message', () => {
+                    const canModifyGDM = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -14029,6 +14285,288 @@ CHAT_HTML = """
                 });
             }
         } catch(e) { console.warn('Resizers init failed', e); }
+
+        // Poll Creation System
+        try {
+            const pollBtn = document.getElementById("pollBtn");
+            const pollModal = document.getElementById("pollModal");
+            const closePollModal = document.getElementById("closePollModal");
+            const cancelPoll = document.getElementById("cancelPoll");
+            const createPoll = document.getElementById("createPoll");
+            const addPollOption = document.getElementById("addPollOption");
+            const pollOptions = document.getElementById("pollOptions");
+            const pollQuestion = document.getElementById("pollQuestion");
+
+            // Show poll modal
+            pollBtn.onclick = () => {
+                pollModal.style.display = "block";
+                pollQuestion.focus();
+            };
+
+            // Close poll modal
+            const closePollModalFn = () => {
+                pollModal.style.display = "none";
+                // Reset form
+                pollQuestion.value = "";
+                const optionInputs = pollOptions.querySelectorAll("input");
+                optionInputs.forEach((input, i) => {
+                    input.value = "";
+                    input.placeholder = `Option ${i + 1}`;
+                });
+                // Reset to 2 options
+                const allOptions = pollOptions.querySelectorAll(".poll-option-input");
+                allOptions.forEach((opt, i) => {
+                    if (i >= 2) opt.remove();
+                });
+                updateRemoveButtons();
+            };
+
+            closePollModal.onclick = closePollModalFn;
+            cancelPoll.onclick = closePollModalFn;
+
+            // Add new option
+            addPollOption.onclick = () => {
+                const optionCount = pollOptions.querySelectorAll(".poll-option-input").length;
+                if (optionCount >= 10) {
+                    showToast("Maximum 10 options allowed", "error");
+                    return;
+                }
+                const newOption = document.createElement("div");
+                newOption.className = "poll-option-input";
+                newOption.style.cssText = "display:flex;gap:8px;margin-bottom:6px";
+                newOption.innerHTML = `
+                    <input type="text" placeholder="Option ${optionCount + 1}" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                    <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>
+                `;
+                pollOptions.appendChild(newOption);
+                updateRemoveButtons();
+                // Add remove handler
+                newOption.querySelector(".remove-option").onclick = () => {
+                    newOption.remove();
+                    updateRemoveButtons();
+                    updatePlaceholders();
+                };
+            };
+
+            // Update remove button states
+            function updateRemoveButtons() {
+                const removeButtons = pollOptions.querySelectorAll(".remove-option");
+                removeButtons.forEach((btn, i) => {
+                    btn.disabled = removeButtons.length <= 2;
+                });
+            }
+
+            // Update option placeholders
+            function updatePlaceholders() {
+                const inputs = pollOptions.querySelectorAll("input");
+                inputs.forEach((input, i) => {
+                    input.placeholder = `Option ${i + 1}`;
+                });
+            }
+
+            // Add remove handlers to initial options
+            pollOptions.querySelectorAll(".remove-option").forEach(btn => {
+                btn.onclick = () => {
+                    btn.closest(".poll-option-input").remove();
+                    updateRemoveButtons();
+                    updatePlaceholders();
+                };
+            });
+
+            // Create poll
+            createPoll.onclick = () => {
+                const question = pollQuestion.value.trim();
+                if (!question) {
+                    showToast("Please enter a poll question", "error");
+                    pollQuestion.focus();
+                    return;
+                }
+
+                const optionInputs = pollOptions.querySelectorAll("input");
+                const options = [];
+                optionInputs.forEach(input => {
+                    const val = input.value.trim();
+                    if (val) options.push(val);
+                });
+
+                if (options.length < 2) {
+                    showToast("Please provide at least 2 options", "error");
+                    return;
+                }
+
+                // Send poll to server
+                const pollData = {
+                    question: question,
+                    options: options,
+                    mode: currentMode,
+                    channel_id: currentMode === "dm" ? currentPeer : (currentMode === "gdm" ? currentThreadId : "public")
+                };
+
+                socket.emit("create_poll", pollData);
+                closePollModalFn();
+                showToast("Poll created!", "ok");
+            };
+
+        } catch(e) { console.warn("Poll system init failed", e); }
+
+        // Poll Socket Event Handlers
+        try {
+            // Handle new polls
+            socket.on("new_poll", (pollData) => {
+                try {
+                    displayPoll(pollData);
+                } catch(e) { console.warn("Failed to display poll", e); }
+            });
+
+            // Handle poll vote updates
+            socket.on("poll_vote_update", (voteData) => {
+                try {
+                    updatePollVotes(voteData);
+                } catch(e) { console.warn("Failed to update poll votes", e); }
+            });
+
+            // Handle poll errors
+            socket.on("poll_error", (errorData) => {
+                try {
+                    showToast(errorData.error || "Poll error", "error");
+                } catch(e) { console.warn("Failed to show poll error", e); }
+            });
+
+            // Display poll in chat
+            function displayPoll(pollData) {
+                const chatEl = getChatElement();
+                if (!chatEl) return;
+
+                const pollDiv = document.createElement("div");
+                pollDiv.className = "poll-message";
+                pollDiv.setAttribute("data-poll-id", pollData.id);
+                pollDiv.style.cssText = `
+                    margin: 12px 0;
+                    padding: 16px;
+                    background: var(--card);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    border-left: 4px solid var(--accent);
+                `;
+
+                const pollHeader = document.createElement("div");
+                pollHeader.style.cssText = "margin-bottom: 12px; color: var(--primary);";
+                pollHeader.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                        <span style="font-size: 18px;">📊</span>
+                        <strong style="font-size: 14px; color: var(--muted);">Poll by ${escapeHtml(pollData.creator)}</strong>
+                    </div>
+                    <div style="font-size: 16px; font-weight: 600; line-height: 1.4;">${escapeHtml(pollData.question)}</div>
+                `;
+
+                const pollOptions = document.createElement("div");
+                pollOptions.className = "poll-options";
+                pollOptions.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+
+                pollData.options.forEach((option, index) => {
+                    const optionDiv = document.createElement("div");
+                    optionDiv.className = "poll-option";
+                    optionDiv.setAttribute("data-option-index", index);
+                    optionDiv.style.cssText = `
+                        display: flex;
+                        align-items: center;
+                        padding: 10px 12px;
+                        background: var(--bg);
+                        border: 1px solid var(--border);
+                        border-radius: 6px;
+                        cursor: pointer;
+                        transition: all 0.2s ease;
+                        position: relative;
+                        overflow: hidden;
+                    `;
+
+                    const optionContent = document.createElement("div");
+                    optionContent.style.cssText = "flex: 1; display: flex; justify-content: space-between; align-items: center; z-index: 2; position: relative;";
+                    optionContent.innerHTML = `
+                        <span style="color: var(--primary); font-weight: 500;">${escapeHtml(option)}</span>
+                        <span class="vote-count" style="color: var(--muted); font-size: 14px; font-weight: 600;">0 votes</span>
+                    `;
+
+                    const progressBar = document.createElement("div");
+                    progressBar.className = "poll-progress";
+                    progressBar.style.cssText = `
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        height: 100%;
+                        background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb, 59, 130, 246), 0.3));
+                        width: 0%;
+                        transition: width 0.3s ease;
+                        z-index: 1;
+                    `;
+
+                    optionDiv.appendChild(progressBar);
+                    optionDiv.appendChild(optionContent);
+
+                    // Add click handler for voting
+                    optionDiv.onclick = () => {
+                        socket.emit("poll_vote", {
+                            poll_id: pollData.id,
+                            option_index: index
+                        });
+                    };
+
+                    // Hover effects
+                    optionDiv.onmouseenter = () => {
+                        optionDiv.style.borderColor = "var(--accent)";
+                        optionDiv.style.transform = "translateY(-1px)";
+                    };
+                    optionDiv.onmouseleave = () => {
+                        optionDiv.style.borderColor = "var(--border)";
+                        optionDiv.style.transform = "translateY(0)";
+                    };
+
+                    pollOptions.appendChild(optionDiv);
+                });
+
+                pollDiv.appendChild(pollHeader);
+                pollDiv.appendChild(pollOptions);
+                chatEl.appendChild(pollDiv);
+                chatEl.scrollTop = chatEl.scrollHeight;
+            }
+
+            // Update poll vote counts
+            function updatePollVotes(voteData) {
+                const pollDiv = document.querySelector(`[data-poll-id="${voteData.poll_id}"]`);
+                if (!pollDiv) return;
+
+                const options = pollDiv.querySelectorAll(".poll-option");
+                const totalVotes = Object.values(voteData.votes).reduce((sum, count) => sum + count, 0);
+
+                options.forEach((optionDiv, index) => {
+                    const voteCount = voteData.votes[index] || 0;
+                    const percentage = totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0;
+
+                    const voteCountSpan = optionDiv.querySelector(".vote-count");
+                    const progressBar = optionDiv.querySelector(".poll-progress");
+
+                    if (voteCountSpan) {
+                        voteCountSpan.textContent = `${voteCount} vote${voteCount !== 1 ? "s" : ""}`;
+                    }
+
+                    if (progressBar) {
+                        progressBar.style.width = `${percentage}%`;
+                    }
+                });
+            }
+
+            // Helper function to get current chat element
+            function getChatElement() {
+                if (currentMode === "dm") {
+                    return document.getElementById("dmChat");
+                } else if (currentMode === "gdm") {
+                    return document.getElementById("gdmChat");
+                } else {
+                    return document.getElementById("chat");
+                }
+            }
+
+        } catch(e) { console.warn("Poll socket handlers init failed", e); }
     </script>
 </body>
 </html>

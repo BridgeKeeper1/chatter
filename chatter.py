@@ -2324,10 +2324,22 @@ def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
     if whitespace_ratio > 0.7:
         return False, "Message contains excessive whitespace. Please use normal formatting."
     
-    # Check for repeated characters
-    repeated_chars = re.findall(r'(.)\1{10,}', text)  # 10+ repeated characters
+    # Check for excessive repeated characters (improved logic)
+    repeated_chars = re.findall(r'(.)\1{20,}', text)  # 20+ repeated characters
     if repeated_chars:
-        return False, "Message contains excessive repeated characters. Please use normal text."
+        # Check if the entire message is mostly just repeated characters
+        if len(text.strip()) > 0:
+            # Calculate what percentage of the message is repeated characters
+            total_repeated = 0
+            for match in re.finditer(r'(.)\1{20,}', text):
+                total_repeated += len(match.group(0))
+            
+            # Only block if 80%+ of message is repeated chars (serious spam)
+            if total_repeated / len(text) > 0.8:
+                return False, "Message consists mostly of repeated characters. Please use normal text for communication."
+            # If it's just some repeated characters mixed with normal text, allow it
+        else:
+            return False, "Message contains excessive repeated characters. Please use normal text."
     
     # Check for HTML/CSS patterns
     html_patterns = [

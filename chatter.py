@@ -14450,13 +14450,12 @@ CHAT_HTML = """
 
                 const pollHeader = document.createElement("div");
                 pollHeader.style.cssText = "margin-bottom: 12px; color: var(--primary);";
-                pollHeader.innerHTML = `
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                        <span style="font-size: 18px;">📊</span>
-                        <strong style="font-size: 14px; color: var(--muted);">Poll by " + escapeHtml(pollData.creator) + "</strong>
-                    </div>
-                    <div style="font-size: 16px; font-weight: 600; line-height: 1.4;">" + escapeHtml(pollData.question) + "</div>
-                `;
+                pollHeader.innerHTML = 
+                    '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">' +
+                        '<span style="font-size: 18px;">📊</span>' +
+                        '<strong style="font-size: 14px; color: var(--muted);">Poll by ' + escapeHtml(pollData.creator) + '</strong>' +
+                    '</div>' +
+                    '<div style="font-size: 16px; font-weight: 600; line-height: 1.4;">' + escapeHtml(pollData.question) + '</div>';
 
                 const pollOptions = document.createElement("div");
                 pollOptions.className = "poll-options";
@@ -14481,10 +14480,9 @@ CHAT_HTML = """
 
                     const optionContent = document.createElement("div");
                     optionContent.style.cssText = "flex: 1; display: flex; justify-content: space-between; align-items: center; z-index: 2; position: relative;";
-                    optionContent.innerHTML = `
-                        <span style="color: var(--primary); font-weight: 500;">${escapeHtml(option)}</span>
-                        <span class="vote-count" style="color: var(--muted); font-size: 14px; font-weight: 600;">0 votes</span>
-                    `;
+                    optionContent.innerHTML = 
+                        '<span style="color: var(--primary); font-weight: 500;">' + escapeHtml(option) + '</span>' +
+                        '<span class="vote-count" style="color: var(--muted); font-size: 14px; font-weight: 600;">0 votes</span>';
 
                     const progressBar = document.createElement("div");
                     progressBar.className = "poll-progress";

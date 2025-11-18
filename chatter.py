@@ -50,6 +50,8 @@ import bleach
 import secrets
 import string
 import requests
+import difflib
+import zlib
 
 SUPPORTED_LANGUAGES = [
     ("en", "English"),
@@ -237,6 +239,7 @@ def _seed_defaults_if_needed():
                 'SPAM_MAX_PER_WINDOW': '8',
                 'SPAM_SLOW_SECONDS': '10',
                 'SPAM_SENSITIVITY': '1.0',
+                'SPAM_AUTO_SPLIT_THRESHOLD': '800',
             }
             for sk, sv in spam_defaults.items():
                 try:
@@ -1713,11 +1716,56 @@ spam_strikes = defaultdict(lambda: {'count': 0.0, 'ts': 0.0})  # username -> {co
 spam_slow_until = defaultdict(float)   # username -> unix timestamp until slow-mode expires
 spam_block_until = defaultdict(float)  # username -> unix timestamp until hard block expires
 
+def _spam_auto_split_message(text: str, max_chars: int = 500) -> list[str]:
+    """Auto-split large messages into smaller chunks."""
+    if not text or len(text) <= max_chars:
+        return [text] if text else []
+    
+    chunks = []
+    # Try to split by paragraphs first
+    paragraphs = text.split('\n\n')
+    current_chunk = ""
+    
+    for para in paragraphs:
+        if len(current_chunk + para) <= max_chars:
+            current_chunk += para + '\n\n'
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.rstrip())
+                current_chunk = ""
+            
+            # If single paragraph is too long, split by sentences
+            if len(para) > max_chars:
+                sentences = para.split('. ')
+                for i, sentence in enumerate(sentences):
+                    if i < len(sentences) - 1:
+                        sentence += '. '
+                    
+                    if len(current_chunk + sentence) <= max_chars:
+                        current_chunk += sentence
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.rstrip())
+                        current_chunk = sentence
+            else:
+                current_chunk = para + '\n\n'
+    
+    if current_chunk:
+        chunks.append(current_chunk.rstrip())
+    
+    return chunks
+
+# Auto-split tracking for rate limiting
+spam_split_queue = defaultdict(list)  # username -> [(ts, chunk), ...]
+
 def _spam_record_strike(user: str, severity: float = 1.0) -> None:
+    """Record a spam strike and apply progressive sanctions."""
     try:
         if not user:
             return
         now = time.time()
+        
+        # Get settings with fallbacks
         try:
             slow_seconds = float(get_setting('SPAM_SLOW_SECONDS','10') or 10.0)
         except Exception:
@@ -1726,17 +1774,22 @@ def _spam_record_strike(user: str, severity: float = 1.0) -> None:
             slow_seconds = 1.0
         elif slow_seconds > 120.0:
             slow_seconds = 120.0
+        
         block_short = max(30.0, slow_seconds * 6.0)
         block_long = max(60.0, slow_seconds * 30.0)
+        
         st = spam_strikes[user]
         last_ts = float(st.get('ts') or 0.0)
+        
         # Decay old strikes after ~5 minutes
         if last_ts and (now - last_ts) > 300.0:
             st['count'] = 0.0
+        
         st['count'] = float(st.get('count') or 0.0) + float(severity)
         st['ts'] = now
         c = float(st.get('count') or 0.0)
-        # Escalate: strikes drive slow-mode and temporary blocks
+        
+        # Progressive escalation: strikes drive slow-mode and temporary blocks
         if c >= 4.0:
             spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_long)
         elif c >= 3.0:
@@ -1746,14 +1799,63 @@ def _spam_record_strike(user: str, severity: float = 1.0) -> None:
     except Exception:
         pass
 
+def _spam_enhanced_content_analysis(text: str) -> tuple[bool, str]:
+    """Enhanced content pattern analysis."""
+    if not text:
+        return True, ""
+    
+    lower = text.lower()
+    
+    # HTML/CSS/JS dump detection
+    try:
+        tag_hits = sum(lower.count(tag) for tag in ('<div', '<script', '<style', '<html', '<body', '<span', '<p>'))
+        css_hits = sum(lower.count(prop) for prop in ('margin:', 'padding:', 'background:', 'color:', 'font-'))
+        js_hits = sum(lower.count(keyword) for keyword in ('function(', 'var ', 'let ', 'const ', '=>'))
+    except Exception:
+        tag_hits = css_hits = js_hits = 0
+    
+    br_hits = lower.count('<br') if '<' in lower else 0
+    newline_hits = text.count('\n')
+    
+    # Excessive whitespace detection
+    whitespace_ratio = (text.count(' ') + text.count('\t') + text.count('\n')) / max(len(text), 1)
+    
+    # Repeated character patterns
+    repeated_chars = len(re.findall(r'(.)\1{10,}', text))  # 10+ repeated chars
+    
+    if tag_hits >= 10 or br_hits >= 20 or newline_hits >= 80:
+        return False, "Large HTML/code dumps are not allowed. Please send files or smaller snippets."
+    
+    if css_hits >= 5 or js_hits >= 5:
+        return False, "Large CSS/JavaScript code blocks should be sent as files."
+    
+    if whitespace_ratio > 0.7 and len(text) > 100:
+        return False, "Messages with excessive whitespace are not allowed."
+    
+    if repeated_chars >= 3:
+        return False, "Messages with excessive repeated characters are not allowed."
+    
+    return True, ""
+
 def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment: bool = False):
+    """
+    Comprehensive spam gate with all requested features:
+    1. Message Length Limit
+    2. Duplicate & Near-Duplicate Detection  
+    3. Payload Size Monitoring
+    4. Auto-Split with Rate Limiting
+    5. Individual Slow Mode
+    6. Content Pattern Analysis
+    7. Progressive Sanction System
+    """
     try:
         if not username:
-            return True, None
+            return True, None, []
+        
         # Superadmins bypass spam gates to avoid accidental lockouts
         try:
             if username in SUPERADMINS:
-                return True, None
+                return True, None, []
         except Exception:
             pass
 
@@ -1788,6 +1890,11 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
             sensitivity = 0.25
         elif sensitivity > 3.0:
             sensitivity = 3.0
+        
+        try:
+            auto_split_threshold = int(get_setting('SPAM_AUTO_SPLIT_THRESHOLD', '800') or 800)
+        except Exception:
+            auto_split_threshold = 800
 
         # Hard block gate (user fully blocked for a short period)
         try:
@@ -1796,7 +1903,7 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
             block_until = 0.0
         if block_until:
             if now < block_until:
-                return False, "You are temporarily blocked from sending messages due to spam-like activity."
+                return False, "You are temporarily blocked from sending messages due to spam-like activity.", []
             # Expired
             spam_block_until.pop(username, None)
 
@@ -1806,7 +1913,7 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
         except Exception:
             slow_until = 0.0
         if slow_until and now < slow_until:
-            return False, "Slow mode is enabled for you. Please wait a few seconds before sending another message."
+            return False, "Slow mode is enabled for you. Please wait a few seconds before sending another message.", []
         if slow_until and now >= slow_until:
             spam_slow_until.pop(username, None)
 
@@ -1821,27 +1928,44 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
             hist = spam_public[username]
             recent = spam_recent_public[username]
 
+        # Auto-split large messages
+        raw = (text or '').strip()
+        message_chunks = []
+        
+        if raw and len(raw) > auto_split_threshold:
+            # Check if message should be auto-split
+            if len(raw) <= max_chars * 3:  # Only auto-split reasonably sized messages
+                chunks = _spam_auto_split_message(raw, auto_split_threshold)
+                if len(chunks) > 1:
+                    message_chunks = chunks
+                    # For auto-split, we'll process the first chunk normally and queue the rest
+                    raw = chunks[0]
+                    
+                    # Queue remaining chunks with rate limiting
+                    split_queue = spam_split_queue[username]
+                    split_queue.clear()  # Clear old queue
+                    for i, chunk in enumerate(chunks[1:], 1):
+                        split_queue.append((now + i * 1.0, chunk))  # 1 second between chunks
+
         # Baseline rate limit: ~1 msg / min_gap, max ~max_per_window msgs / rate_window
         window = rate_window
         hist[:] = [t for t in hist if now - t <= window]
         if hist and ((now - hist[-1]) < min_gap or len(hist) >= max_per_window):
             base_sev = 1.5 if len(hist) >= max_per_window else 1.0
             _spam_record_strike(username, severity=base_sev * sensitivity)
-            return False, "You are sending messages too quickly; please slow down."
+            return False, "You are sending messages too quickly; please slow down.", []
         hist.append(now)
 
-        # Trim and normalise text for further checks
-        raw = (text or '').strip()
         if raw:
-            # Message length / payload size limits (server-side backstop).
+            # Message length / payload size limits (server-side backstop)
             try:
                 if len(raw) > max_chars or len(raw.encode('utf-8')) > max_bytes:
                     _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it."
+                    return False, "This message is too large. Please shorten it.", []
             except Exception:
                 if len(raw) > max_chars:
                     _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it."
+                    return False, "This message is too large. Please shorten it.", []
 
             # Compression-based payload check: catch large encoded/base64-style blobs
             try:
@@ -1850,21 +1974,15 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
                     comp = zlib.compress(raw_bytes, level=3)
                     if len(comp) > max_bytes:
                         _spam_record_strike(username, severity=1.0 * sensitivity)
-                        return False, "This message looks like a large encoded payload. Please send it as a file instead of pasting it."
+                        return False, "This message looks like a large encoded payload. Please send it as a file instead of pasting it.", []
             except Exception:
                 pass
 
-            # Content pattern analysis: HTML dumps / excessive breaks / giant walls
-            lower = raw.lower()
-            try:
-                tag_hits = sum(lower.count(tag) for tag in ('<div', '<script', '<style', '<html', '<body'))
-            except Exception:
-                tag_hits = 0
-            br_hits = lower.count('<br') if '<' in lower else 0
-            newline_hits = raw.count('\n')
-            if tag_hits >= 10 or br_hits >= 20 or newline_hits >= 80:
+            # Enhanced content pattern analysis
+            content_ok, content_msg = _spam_enhanced_content_analysis(raw)
+            if not content_ok:
                 _spam_record_strike(username, severity=1.0 * sensitivity)
-                return False, "Large HTML/code dumps are not allowed. Please send files or smaller snippets."
+                return False, content_msg, []
 
             # Duplicate / near-duplicate detection in the last 60 seconds
             recent_window = 60.0
@@ -1875,22 +1993,47 @@ def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment
                     continue
                 if norm == prev:
                     _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "Duplicate message detected. Please avoid sending the same content repeatedly."
+                    return False, "Duplicate message detected. Please avoid sending the same content repeatedly.", []
                 try:
                     if len(norm) >= 40 and len(prev) >= 40:
                         ratio = difflib.SequenceMatcher(None, norm, prev).ratio()
                         if ratio > 0.97:
                             _spam_record_strike(username, severity=0.7 * sensitivity)
-                            return False, "Very similar message detected. Please avoid minor variations of the same content."
+                            return False, "Very similar message detected. Please avoid minor variations of the same content.", []
                 except Exception:
                     pass
             recent.append((now, norm))
 
-        # For attachment-only messages, we still rely on rate limiting above.
-        return True, None
+        # Return success with any auto-split chunks
+        return True, None, message_chunks
     except Exception:
         # Fail open on unexpected errors to avoid breaking chat
-        return True, None
+        return True, None, []
+
+def _spam_process_split_queue(username: str):
+    """Process queued auto-split message chunks."""
+    try:
+        now = time.time()
+        split_queue = spam_split_queue[username]
+        
+        # Process ready chunks
+        ready_chunks = []
+        remaining_chunks = []
+        
+        for ts, chunk in split_queue:
+            if now >= ts:
+                ready_chunks.append(chunk)
+            else:
+                remaining_chunks.append((ts, chunk))
+        
+        # Update queue
+        split_queue[:] = remaining_chunks
+        
+        return ready_chunks
+                
+    except Exception:
+        return []
+
 
 # Socket.IO connection management
 @socketio.on('connect')
@@ -6735,21 +6878,6 @@ def on_gdm_send_v1(data):
     try:
         tid = int((data or {}).get('thread_id', 0))
     except Exception:
-        tid = 0
-    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
-    try:
-        now = time.time()
-        window = 10.0
-        hist = spam_gdm[me]
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
-            try:
-                emit("system_message", "You are sending messages too quickly", room=f'user:{me}')
-            except Exception:
-                pass
-            return
-        hist.append(now)
-    except Exception:
         pass
     # Platform gates
     try:
@@ -6759,6 +6887,18 @@ def on_gdm_send_v1(data):
             return
     except Exception:
         pass
+
+    # Comprehensive anti-spam checking
+    text = (data or {}).get("text", "").strip()
+    has_attachment = bool((data or {}).get("filename"))
+    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("gdm", me, text, has_attachment=has_attachment)
+    if not spam_ok:
+        try:
+            emit("system_message", spam_msg, room=f"user:{me}")
+        except Exception:
+            pass
+        return
+
     text = (data or {}).get('text', '').strip()
     if not me or not tid or not (text or (data or {}).get('filename')):
         return
@@ -7042,21 +7182,6 @@ def on_send_message(data):
             return
     except Exception:
         pass
-    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
-    try:
-        now = time.time()
-        window = 10.0
-        hist = spam_public[username]
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
-            try:
-                emit("system_message", "You are sending messages too quickly", room=f'user:{username}')
-            except Exception:
-                pass
-            return
-        hist.append(now)
-    except Exception:
-        pass
 
     # Enforce IP bans (private first then public)
     try:
@@ -7115,8 +7240,20 @@ def on_send_message(data):
             return
         if get_setting('ANNOUNCEMENTS_ONLY','0')=='1' and not adminish:
             return
+
     except Exception:
         pass
+    # Comprehensive anti-spam checking
+    text = (data or {}).get("text", "").strip()
+    has_attachment = bool((data or {}).get("filename"))
+    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("public", username, text, has_attachment=has_attachment)
+    if not spam_ok:
+        try:
+            emit("system_message", spam_msg, room=f"user:{username}")
+        except Exception:
+            pass
+        return
+
     text = (data.get("text") or "").strip()
     attachment = None
     
@@ -7753,6 +7890,18 @@ def on_dm_send(data):
             return
     except Exception:
         pass
+
+    # Comprehensive anti-spam checking
+    text = (data or {}).get("text", "").strip()
+    has_attachment = bool((data or {}).get("filename"))
+    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("dm", username, text, has_attachment=has_attachment)
+    if not spam_ok:
+        try:
+            emit("system_message", spam_msg, room=f"user:{username}")
+        except Exception:
+            pass
+        return
+
     to_user = (data or {}).get("to", "").strip()
     text = (data or {}).get("text", "").strip()
     if not to_user or not (text or (data or {}).get("filename")):

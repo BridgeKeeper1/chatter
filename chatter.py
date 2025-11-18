@@ -3192,6 +3192,7 @@ def api_admin_toggles():
             # Group tools
             'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
             # Admin tools
+            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN',
             # Downtime & Alerts
             'DOWNTIME_ENABLED','DOWNTIME_REASON','ALERTS_ENABLED','ALERTS_TEXT',
             # Security

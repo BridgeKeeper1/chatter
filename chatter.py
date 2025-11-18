@@ -50,433 +50,6 @@ import bleach
 import secrets
 import string
 import requests
-import difflib
-import zlib
-
-# ============================================================================
-# EMERGENCY SHUTDOWN SYSTEM - Consolidated into main file
-# ============================================================================
-
-# Emergency shutdown state tracking
-emergency_shutdown_active = False
-emergency_shutdown_timestamp = None
-emergency_shutdown_trigger = None
-emergency_shutdown_admin = None
-emergency_shutdown_snapshot = {}
-emergency_shutdown_locked_users = set()
-emergency_recovery_stage = 0  # 0=full shutdown, 1=read-only, 2=chat-only, 3=full recovery
-
-# Emergency shutdown logging
-emergency_shutdown_log = []
-def _emergency_log(message: str, level: str = "INFO", admin: str = None):
-    """Log emergency shutdown events with timestamp."""
-    try:
-        timestamp = datetime.utcnow().isoformat()
-        log_entry = {
-            'timestamp': timestamp,
-            'level': level,
-            'message': message,
-            'admin': admin or 'SYSTEM',
-            'stage': emergency_recovery_stage
-        }
-        emergency_shutdown_log.append(log_entry)
-        
-        # Keep only last 1000 log entries to prevent memory issues
-        if len(emergency_shutdown_log) > 1000:
-            emergency_shutdown_log[:] = emergency_shutdown_log[-1000:]
-            
-        # Also log to console for debugging
-        print(f"[EMERGENCY] {timestamp} [{level}] {message}")
-        
-    except Exception as e:
-        print(f"[EMERGENCY] Failed to log: {e}")
-
-def _emergency_create_snapshot(get_db_func, get_setting_func, connected_sockets, spam_strikes):
-    """Create a snapshot of current system state for recovery analysis."""
-    try:
-        snapshot = {
-            'timestamp': datetime.utcnow().isoformat(),
-            'active_users': [],
-            'recent_messages': [],
-            'system_settings': {},
-            'database_stats': {},
-            'socket_connections': len(connected_sockets),
-            'spam_strikes': dict(spam_strikes),
-            'maintenance_mode': get_setting_func('MAINTENANCE_MODE', '0')
-        }
-        
-        # Capture active users (last 5 minutes)
-        try:
-            db = get_db_func()
-            cur = db.cursor()
-            five_min_ago = datetime.utcnow() - timedelta(minutes=5)
-            cur.execute("""
-                SELECT DISTINCT username FROM messages 
-                WHERE timestamp > ? 
-                ORDER BY timestamp DESC LIMIT 100
-            """, (five_min_ago,))
-            snapshot['active_users'] = [row[0] for row in cur.fetchall()]
-        except Exception as e:
-            snapshot['active_users'] = ['Error capturing users: ' + str(e)]
-        
-        # Capture recent messages (last 10)
-        try:
-            db = get_db_func()
-            cur = db.cursor()
-            cur.execute("""
-                SELECT username, text, timestamp FROM messages 
-                ORDER BY timestamp DESC LIMIT 10
-            """)
-            snapshot['recent_messages'] = [
-                {'user': row[0], 'text': row[1][:100], 'time': str(row[2])}
-                for row in cur.fetchall()
-            ]
-        except Exception as e:
-            snapshot['recent_messages'] = ['Error capturing messages: ' + str(e)]
-        
-        # Capture key system settings
-        try:
-            settings_to_capture = [
-                'MAINTENANCE_MODE', 'PUBLIC_ENABLED', 'DM_ENABLED', 'GDM_ENABLED',
-                'ANNOUNCEMENTS_ONLY', 'SPAM_MAX_CHARS', 'SPAM_SENSITIVITY'
-            ]
-            for setting in settings_to_capture:
-                snapshot['system_settings'][setting] = get_setting_func(setting, 'N/A')
-        except Exception as e:
-            snapshot['system_settings'] = {'error': str(e)}
-        
-        # Database statistics
-        try:
-            db = get_db_func()
-            cur = db.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in cur.fetchall()]
-            
-            for table in tables[:10]:  # Limit to first 10 tables
-                try:
-                    cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    snapshot['database_stats'][table] = cur.fetchone()[0]
-                except Exception:
-                    snapshot['database_stats'][table] = 'Error'
-        except Exception as e:
-            snapshot['database_stats'] = {'error': str(e)}
-        
-        return snapshot
-        
-    except Exception as e:
-        return {'error': f'Failed to create snapshot: {e}', 'timestamp': datetime.utcnow().isoformat()}
-
-def _emergency_backup_database(db_path):
-    """Create a backup of the database for post-incident analysis."""
-    try:
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        backup_path = f"{db_path}.emergency_backup_{timestamp}"
-        
-        # Create backup
-        shutil.copy2(db_path, backup_path)
-        
-        _emergency_log(f"Database backup created: {backup_path}", "INFO")
-        return backup_path
-        
-    except Exception as e:
-        _emergency_log(f"Failed to create database backup: {e}", "ERROR")
-        return None
-
-def emergency_shutdown_activate(trigger: str, admin: str = None, auto_backup: bool = True, 
-                               db_path=None, get_db_func=None, get_setting_func=None, 
-                               set_setting_func=None, connected_sockets=None, spam_strikes=None,
-                               notify_func=None):
-    """
-    Activate emergency shutdown mode.
-    
-    Args:
-        trigger: Reason for shutdown (e.g., "ADMIN_COMMAND", "SECURITY_INCIDENT", "SYSTEM_ERROR")
-        admin: Admin username who triggered shutdown (if applicable)
-        auto_backup: Whether to automatically create database backup
-    """
-    global emergency_shutdown_active, emergency_shutdown_timestamp, emergency_shutdown_trigger
-    global emergency_shutdown_admin, emergency_shutdown_snapshot, emergency_recovery_stage
-    
-    try:
-        if emergency_shutdown_active:
-            _emergency_log(f"Emergency shutdown already active, ignoring duplicate trigger: {trigger}", "WARNING", admin)
-            return False
-        
-        # Activate emergency mode
-        emergency_shutdown_active = True
-        emergency_shutdown_timestamp = datetime.utcnow()
-        emergency_shutdown_trigger = trigger
-        emergency_shutdown_admin = admin
-        emergency_recovery_stage = 0
-        
-        _emergency_log(f"EMERGENCY SHUTDOWN ACTIVATED - Trigger: {trigger}", "CRITICAL", admin)
-        
-        # Create system snapshot
-        if get_db_func and get_setting_func and connected_sockets is not None and spam_strikes is not None:
-            emergency_shutdown_snapshot = _emergency_create_snapshot(
-                get_db_func, get_setting_func, connected_sockets, spam_strikes
-            )
-            _emergency_log("System snapshot created", "INFO", admin)
-        
-        # Create database backup if requested
-        if auto_backup and db_path:
-            backup_path = _emergency_backup_database(db_path)
-            if backup_path:
-                emergency_shutdown_snapshot['backup_path'] = backup_path
-        
-        # Set maintenance mode
-        if set_setting_func:
-            try:
-                set_setting_func('MAINTENANCE_MODE', '1')
-                _emergency_log("Maintenance mode activated", "INFO", admin)
-            except Exception as e:
-                _emergency_log(f"Failed to set maintenance mode: {e}", "ERROR", admin)
-        
-        # Notify all connected users
-        if notify_func:
-            try:
-                notify_func("Emergency maintenance in progress. Please stand by.")
-            except Exception as e:
-                _emergency_log(f"Failed to notify users: {e}", "ERROR", admin)
-        
-        _emergency_log("Emergency shutdown activation complete", "INFO", admin)
-        return True
-        
-    except Exception as e:
-        _emergency_log(f"Failed to activate emergency shutdown: {e}", "ERROR", admin)
-        return False
-
-def emergency_shutdown_deactivate(admin: str = None, set_setting_func=None, notify_func=None):
-    """Deactivate emergency shutdown and return to normal operation."""
-    global emergency_shutdown_active, emergency_recovery_stage
-    
-    try:
-        if not emergency_shutdown_active:
-            _emergency_log("Emergency shutdown not active, ignoring deactivation", "WARNING", admin)
-            return False
-        
-        _emergency_log("EMERGENCY SHUTDOWN DEACTIVATION STARTED", "CRITICAL", admin)
-        
-        # Full recovery
-        emergency_recovery_stage = 3
-        emergency_shutdown_active = False
-        
-        # Remove maintenance mode
-        if set_setting_func:
-            try:
-                set_setting_func('MAINTENANCE_MODE', '0')
-                _emergency_log("Maintenance mode deactivated", "INFO", admin)
-            except Exception as e:
-                _emergency_log(f"Failed to remove maintenance mode: {e}", "ERROR", admin)
-        
-        # Clear locked users
-        emergency_shutdown_locked_users.clear()
-        _emergency_log("All user locks cleared", "INFO", admin)
-        
-        # Notify users
-        if notify_func:
-            try:
-                notify_func("Emergency maintenance complete. Normal operation resumed.")
-            except Exception as e:
-                _emergency_log(f"Failed to notify users of recovery: {e}", "ERROR", admin)
-        
-        _emergency_log("EMERGENCY SHUTDOWN DEACTIVATION COMPLETE", "CRITICAL", admin)
-        return True
-        
-    except Exception as e:
-        _emergency_log(f"Failed to deactivate emergency shutdown: {e}", "ERROR", admin)
-        return False
-
-def emergency_shutdown_set_stage(stage: int, admin: str = None):
-    """
-    Set recovery stage for gradual system restoration.
-    
-    Stages:
-    0 = Full shutdown (no operations)
-    1 = Read-only mode (view messages only)
-    2 = Chat-only mode (messaging enabled, no login/registration)
-    3 = Full recovery (all operations enabled)
-    """
-    global emergency_recovery_stage
-    
-    try:
-        if not emergency_shutdown_active and stage != 3:
-            _emergency_log(f"Cannot set stage {stage} - emergency shutdown not active", "WARNING", admin)
-            return False
-        
-        old_stage = emergency_recovery_stage
-        emergency_recovery_stage = max(0, min(3, stage))
-        
-        stage_names = {
-            0: "Full Shutdown",
-            1: "Read-Only Mode", 
-            2: "Chat-Only Mode",
-            3: "Full Recovery"
-        }
-        
-        _emergency_log(f"Recovery stage changed: {old_stage} -> {emergency_recovery_stage} ({stage_names.get(emergency_recovery_stage, 'Unknown')})", "INFO", admin)
-        
-        # If moving to full recovery, deactivate emergency mode
-        if emergency_recovery_stage == 3:
-            return emergency_shutdown_deactivate(admin)
-        
-        return True
-        
-    except Exception as e:
-        _emergency_log(f"Failed to set recovery stage: {e}", "ERROR", admin)
-        return False
-
-def emergency_shutdown_lock_user(username: str, admin: str = None):
-    """Lock a specific user during emergency shutdown."""
-    try:
-        emergency_shutdown_locked_users.add(username)
-        _emergency_log(f"User locked: {username}", "INFO", admin)
-        return True
-    except Exception as e:
-        _emergency_log(f"Failed to lock user {username}: {e}", "ERROR", admin)
-        return False
-
-def emergency_shutdown_unlock_user(username: str, admin: str = None):
-    """Unlock a specific user during emergency shutdown."""
-    try:
-        emergency_shutdown_locked_users.discard(username)
-        _emergency_log(f"User unlocked: {username}", "INFO", admin)
-        return True
-    except Exception as e:
-        _emergency_log(f"Failed to unlock user {username}: {e}", "ERROR", admin)
-        return False
-
-def _emergency_check_gate(username: str = None, operation: str = "general", superadmins=None) -> tuple[bool, str]:
-    """
-    Check if operation is allowed during emergency shutdown.
-    
-    Returns:
-        (allowed: bool, reason: str)
-    """
-    try:
-        if not emergency_shutdown_active:
-            return True, ""
-        
-        # Superadmins can always operate (for recovery purposes)
-        if username and superadmins and username in superadmins:
-            return True, ""
-        
-        # Check if user is specifically locked
-        if username and username in emergency_shutdown_locked_users:
-            return False, "Your account is temporarily locked during emergency maintenance."
-        
-        # Check recovery stage permissions
-        if emergency_recovery_stage == 0:
-            # Full shutdown - no operations allowed
-            return False, "System is in emergency maintenance mode. All operations are temporarily disabled."
-        
-        elif emergency_recovery_stage == 1:
-            # Read-only mode - only viewing allowed
-            if operation in ['view', 'read', 'get']:
-                return True, ""
-            return False, "System is in read-only emergency mode. Only viewing is currently allowed."
-        
-        elif emergency_recovery_stage == 2:
-            # Chat-only mode - messaging allowed, no login/registration
-            if operation in ['view', 'read', 'get', 'message', 'chat']:
-                return True, ""
-            if operation in ['login', 'register', 'upload', 'settings']:
-                return False, "System is in limited emergency mode. Login and registration are temporarily disabled."
-            return False, "System is in limited emergency mode. Some features are temporarily disabled."
-        
-        elif emergency_recovery_stage == 3:
-            # Full recovery - all operations allowed
-            return True, ""
-        
-        # Default: block unknown operations during emergency
-        return False, "System is in emergency maintenance mode."
-        
-    except Exception as e:
-        _emergency_log(f"Emergency gate check failed: {e}", "ERROR")
-        # Fail safe: block operations during errors
-        return False, "System is experiencing technical difficulties."
-
-def _emergency_auto_trigger_check(get_db_func=None, db_path=None):
-    """Check for conditions that should automatically trigger emergency shutdown."""
-    try:
-        # Skip if already in emergency mode
-        if emergency_shutdown_active:
-            return
-        
-        # Check database connectivity
-        if get_db_func:
-            try:
-                db = get_db_func()
-                cur = db.cursor()
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            except Exception as e:
-                _emergency_log(f"Database connectivity check failed: {e}", "ERROR")
-                emergency_shutdown_activate("DATABASE_CONNECTION_FAILURE", auto_backup=False)
-                return
-        
-        # Check memory usage (basic check)
-        try:
-            import psutil
-            memory_percent = psutil.virtual_memory().percent
-            if memory_percent > 95:  # 95% memory usage
-                _emergency_log(f"High memory usage detected: {memory_percent}%", "WARNING")
-                emergency_shutdown_activate("RESOURCE_EXHAUSTION_MEMORY", auto_backup=True)
-                return
-        except ImportError:
-            # psutil not available, skip memory check
-            pass
-        except Exception as e:
-            _emergency_log(f"Memory check failed: {e}", "WARNING")
-        
-        # Check for excessive error rates (basic implementation)
-        # This would need to be integrated with actual error tracking
-        
-    except Exception as e:
-        _emergency_log(f"Auto-trigger check failed: {e}", "ERROR")
-
-def get_emergency_status():
-    """Get current emergency shutdown status."""
-    return {
-        'active': emergency_shutdown_active,
-        'timestamp': emergency_shutdown_timestamp.isoformat() if emergency_shutdown_timestamp else None,
-        'trigger': emergency_shutdown_trigger,
-        'admin': emergency_shutdown_admin,
-        'recovery_stage': emergency_recovery_stage,
-        'locked_users': list(emergency_shutdown_locked_users),
-        'log_entries': len(emergency_shutdown_log),
-        'recent_logs': emergency_shutdown_log[-10:] if emergency_shutdown_log else [],
-        'snapshot': emergency_shutdown_snapshot
-    }
-
-def get_emergency_logs(page=1, per_page=50):
-    """Get emergency shutdown logs with pagination."""
-    try:
-        # Calculate pagination
-        total_logs = len(emergency_shutdown_log)
-        start_idx = (page - 1) * per_page
-        end_idx = start_idx + per_page
-        
-        # Get logs (most recent first)
-        logs = list(reversed(emergency_shutdown_log))[start_idx:end_idx]
-        
-        return {
-            'logs': logs,
-            'pagination': {
-                'page': page,
-                'per_page': per_page,
-                'total': total_logs,
-                'pages': (total_logs + per_page - 1) // per_page
-            }
-        }
-        
-    except Exception as e:
-        return {'error': f'Failed to get logs: {e}'}
-
-# ============================================================================
-# END EMERGENCY SHUTDOWN SYSTEM
-# ============================================================================
-
 
 SUPPORTED_LANGUAGES = [
     ("en", "English"),
@@ -664,7 +237,6 @@ def _seed_defaults_if_needed():
                 'SPAM_MAX_PER_WINDOW': '8',
                 'SPAM_SLOW_SECONDS': '10',
                 'SPAM_SENSITIVITY': '1.0',
-                'SPAM_AUTO_SPLIT_THRESHOLD': '800',
             }
             for sk, sv in spam_defaults.items():
                 try:
@@ -728,10 +300,10 @@ function render(list){
     if(host){ host.prepend(sec); }
     else if(target){ target.insertBefore(sec, target.firstChild); }
   }
-  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
+  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
   sec.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><strong>Admins</strong><span style="font-size:12px;color:#9ca3af">(' + (list||[]).length + ' online)</span></div>' + items;
 }
-function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
+function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
@@ -2128,641 +1700,197 @@ connected_sockets = {}  # Track connected sockets for better message delivery
 typing_users = {}  # username -> expiry timestamp
 voice_channels = defaultdict(set)  # channel -> set(usernames)
 
-# Comprehensive Anti-Spam System with All 7 Requested Features
-import time
-import hashlib
-import re
-import difflib
-import zlib
-from collections import defaultdict
-
-# Anti-spam state tracking
+# Simple anti-spam tracking (timestamps in seconds)
 spam_public = defaultdict(list)  # username -> [ts,...]
 spam_dm = defaultdict(list)      # username -> [ts,...]
 spam_gdm = defaultdict(list)     # username -> [ts,...]
 
-# Message content tracking for duplicate detection
-spam_message_hashes = defaultdict(list)  # username -> [(hash, timestamp), ...]
-spam_recent_messages = defaultdict(list)  # username -> [(text, timestamp), ...]
-
-# Progressive sanction system
-spam_strikes = defaultdict(lambda: {'count': 0, 'violations': [], 'last_violation': 0})
+# Extended anti-spam state for content-based checks and progressive sanctions
+spam_recent_public = defaultdict(list)  # username -> [(ts, norm_text)]
+spam_recent_dm = defaultdict(list)
+spam_recent_gdm = defaultdict(list)
+spam_strikes = defaultdict(lambda: {'count': 0.0, 'ts': 0.0})  # username -> {count, ts}
 spam_slow_until = defaultdict(float)   # username -> unix timestamp until slow-mode expires
 spam_block_until = defaultdict(float)  # username -> unix timestamp until hard block expires
 
-# Auto-split queue with rate limiting
-spam_split_queue = defaultdict(list)  # username -> [(scheduled_time, chunk), ...]
-
-def _spam_message_length_check(text: str, max_chars: int = 1000) -> tuple[bool, str]:
-    """1. Message Length Limit - Check if message exceeds character limit."""
-    if not text:
-        return True, ""
-    
-    if len(text) > max_chars:
-        return False, f"Message too long ({len(text)} chars). Maximum allowed: {max_chars} characters. Please shorten your message."
-    
-    return True, ""
-
-def _spam_create_message_hash(text: str) -> str:
-    """Create a hash fingerprint of message content for duplicate detection."""
-    # Normalize text: lowercase, remove extra whitespace, strip punctuation
-    normalized = re.sub(r'[^\w\s]', '', text.lower())
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    
-    # Create hash
-    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
-
-
-def _spam_is_whitelisted_content(text: str) -> bool:
-    """Check if content is whitelisted (common legitimate words/phrases)."""
-    if not text or not text.strip():
-        return True
-    
-    # Clean the text
-    clean_text = text.strip().lower()
-    
-    # Common single letters and short words that should NEVER be blocked
-    common_single_chars = {
-        "a", "i", "e", "o", "u", "y",  # vowels
-        "b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "w", "x", "z"  # consonants
-    }
-    
-    # Common short words (1-3 characters)
-    common_short_words = {
-        "ok", "hi", "bye", "yes", "no", "lol", "omg", "wtf", "brb", "ttyl", "gg", "gj", "ty", "np", "yw",
-        "is", "it", "to", "be", "we", "he", "me", "at", "on", "in", "or", "and", "the", "for", "you", "are",
-        "was", "but", "not", "can", "had", "her", "his", "she", "one", "our", "out", "day", "get", "has",
-        "him", "how", "man", "new", "now", "old", "see", "two", "way", "who", "boy", "did", "its", "let",
-        "put", "say", "she", "too", "use"
-    }
-    
-    # Common expressions and reactions
-    common_expressions = {
-        "haha", "hehe", "lmao", "rofl", "nice", "cool", "wow", "omg", "damn", "shit", "fuck", "hell",
-        "what", "when", "where", "why", "how", "who", "which", "that", "this", "here", "there",
-        "good", "bad", "great", "awesome", "terrible", "amazing", "perfect", "wrong", "right",
-        "hello", "goodbye", "thanks", "thank", "please", "sorry", "excuse", "welcome"
-    }
-    
-    # If it is just a single character, always allow (people say "e", "a", "i" legitimately)
-    if len(clean_text) == 1 and clean_text in common_single_chars:
-        return True
-    
-    # If it is a common short word, always allow
-    if clean_text in common_short_words:
-        return True
-    
-    # If it is a common expression, always allow
-    if clean_text in common_expressions:
-        return True
-    
-    # Check if it is just repeated common characters (like "hahaha", "lololol")
-    if len(set(clean_text)) <= 2 and len(clean_text) <= 10:
-        # Allow repeated patterns of common letters (ha, he, lo, etc.)
-        unique_chars = set(clean_text)
-        if unique_chars.issubset(common_single_chars):
-            return True
-    
-    # Check for common punctuation-only messages
-    punctuation_chars = ".,!?;:-()[]{}\"" + chr(9) + chr(10)
-    if all(c in punctuation_chars for c in clean_text):
-        return True
-    return False
-
-def _spam_is_user_showing_spam_behavior(username: str, text: str, timeframe: int = 60) -> bool:
-    """Check if user is exhibiting spam-like behavior patterns."""
-    now = time.time()
-    
-    # Get user recent messages
-    user_messages = spam_recent_messages.get(username, [])
-    recent_messages = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
-    
-    if len(recent_messages) < 3:  # Need at least 3 messages to detect pattern
-        return False
-    
-    # Check for rapid single-character spam (like "e e e e e")
-    single_char_count = 0
-    for msg, ts in recent_messages:
-        if len(msg.strip()) == 1:
-            single_char_count += 1
-    
-    if single_char_count >= 5:  # 5+ single characters in timeframe = spam behavior
-        return True
-    
-    # Check for rapid identical messages
-    identical_count = 0
-    for msg, ts in recent_messages:
-        if msg.strip().lower() == text.strip().lower():
-            identical_count += 1
-    
-    if identical_count >= 3:  # 3+ identical messages = spam behavior
-        return True
-    
-    # Check for excessive message frequency (more than 1 message per 2 seconds)
-    if len(recent_messages) >= 10:  # 10+ messages in 1 minute = spam behavior
-        return True
-    
-    return False
-
-def _spam_is_near_duplicate(text: str, stored_msg: str, text_length: int) -> bool:
-    """Enhanced near-duplicate detection for paragraph variations."""
-    # Normalize both messages for comparison
-    def normalize_text(msg):
-        # Remove extra whitespace and convert to lowercase
-        normalized = re.sub(r'\s+', ' ', msg.lower().strip())
-        # Remove common filler words that users often add/remove
-        filler_words = {'the', 'a', 'an', 'and', 'or', 'but', 'so', 'very', 'really', 'just', 'also', 'too', 'quite', 'pretty', 'actually', 'basically', 'literally'}
-        words = [w for w in normalized.split() if w not in filler_words]
-        return ' '.join(words)
-    
-    # Normalize both messages
-    norm_text = normalize_text(text)
-    norm_stored = normalize_text(stored_msg)
-    
-    # If either is too short after normalization, use regular similarity
-    if len(norm_text) < 10 or len(norm_stored) < 10:
-        return difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio() > 0.85
-    
-    # Calculate different types of similarity
-    char_similarity = difflib.SequenceMatcher(None, norm_text, norm_stored).ratio()
-    
-    # Word-level similarity (order-independent)
-    text_words = set(norm_text.split())
-    stored_words = set(norm_stored.split())
-    if len(text_words) == 0 or len(stored_words) == 0:
-        word_similarity = 0
-    else:
-        common_words = len(text_words.intersection(stored_words))
-        total_words = len(text_words.union(stored_words))
-        word_similarity = common_words / total_words if total_words > 0 else 0
-    
-    # Length-aware thresholds for different message sizes
-    if text_length < 100:  # Short messages
-        char_threshold = 0.90
-        word_threshold = 0.85
-    elif text_length < 500:  # Medium messages
-        char_threshold = 0.80
-        word_threshold = 0.75
-    else:  # Long messages (paragraphs)
-        char_threshold = 0.70
-        word_threshold = 0.65
-    
-    # Combined similarity score (weighted average)
-    combined_similarity = (char_similarity * 0.6) + (word_similarity * 0.4)
-    
-    # Return True if either character similarity OR word similarity OR combined score exceeds threshold
-    return (char_similarity > char_threshold or 
-            word_similarity > word_threshold or 
-            combined_similarity > ((char_threshold + word_threshold) / 2))
-
-def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) -> tuple[bool, str]:
-    """2. Intelligent Duplicate & Near-Duplicate Detection - Smart about common words."""
-    if not text.strip():
-        return True, ""
-    
-    now = time.time()
-    
-    # SMART FILTERING: Don't flag common legitimate content
-    if _spam_is_whitelisted_content(text):
-        return True, ""
-    
-    # Check if user is showing spam behavior patterns
-    if _spam_is_user_showing_spam_behavior(username, text):
-        _spam_record_violation(username, "spam_behavior_detected", 3)
-        return False, "Spam-like behavior detected. Please slow down and vary your messages."
-    
-    message_hash = _spam_create_message_hash(text)
-    
-    # Clean old hashes
-    user_hashes = spam_message_hashes[username]
-    spam_message_hashes[username] = [(h, ts) for h, ts in user_hashes if now - ts < timeframe]
-    
-    # Check for exact duplicate (but only if not whitelisted)
-    for stored_hash, timestamp in spam_message_hashes[username]:
-        if stored_hash == message_hash and now - timestamp < timeframe:
-            return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
-    
-    # ENHANCED NEAR-DUPLICATE DETECTION: Catches paragraph variations
-    user_messages = spam_recent_messages[username]
-    spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
-    
-    # Check for sophisticated near-duplicates (paragraph variations)
-    text_length = len(text)
-    for stored_msg, timestamp in spam_recent_messages[username]:
-        if now - timestamp < timeframe:  # Check within full timeframe for near-duplicates
-            # Skip similarity check for whitelisted content
-            if _spam_is_whitelisted_content(stored_msg):
-                continue
-                
-            # Use enhanced detection for paragraph variations
-            if _spam_is_near_duplicate(text, stored_msg, text_length):
-                return False, f"Similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
-    
-    # Also check for rapid-fire behavior (multiple messages quickly)
-    recent_similar_count = 0
-    for stored_msg, timestamp in spam_recent_messages[username]:
-        if now - timestamp < 60:  # Only check last minute for behavioral patterns
-            if _spam_is_whitelisted_content(stored_msg):
-                continue
-            if _spam_is_near_duplicate(text, stored_msg, text_length):
-                recent_similar_count += 1
-    
-    # Flag rapid similar messages as spam behavior
-    if recent_similar_count >= 3:  # 3+ similar messages in 1 minute = spam behavior
-        return False, f"Rapid similar messages detected. Please slow down and vary your messages."
-    
-    # Store this message
-    spam_message_hashes[username].append((message_hash, now))
-    spam_recent_messages[username].append((text, now))
-    
-    return True, ""
-    
-
-def _spam_payload_size_check(text: str, max_bytes: int = 8192) -> tuple[bool, str]:
-    """3. Payload Size Monitoring - Check message byte size."""
-    if not text:
-        return True, ""
-    
-    # Check raw byte size
-    byte_size = len(text.encode('utf-8'))
-    if byte_size > max_bytes:
-        return False, f"Message payload too large ({byte_size} bytes). Maximum allowed: {max_bytes} bytes."
-    
-    # Check compressed size to detect encoded spam
+def _spam_record_strike(user: str, severity: float = 1.0) -> None:
     try:
-        compressed_size = len(zlib.compress(text.encode('utf-8')))
-        compression_ratio = compressed_size / byte_size if byte_size > 0 else 1
-        
-        # If compression ratio is very low, it might be repetitive spam
-        if compression_ratio < 0.1 and byte_size > 1000:
-            return False, "Message appears to contain repetitive content. Please vary your message content."
+        if not user:
+            return
+        now = time.time()
+        try:
+            slow_seconds = float(get_setting('SPAM_SLOW_SECONDS','10') or 10.0)
+        except Exception:
+            slow_seconds = 10.0
+        if slow_seconds < 1.0:
+            slow_seconds = 1.0
+        elif slow_seconds > 120.0:
+            slow_seconds = 120.0
+        block_short = max(30.0, slow_seconds * 6.0)
+        block_long = max(60.0, slow_seconds * 30.0)
+        st = spam_strikes[user]
+        last_ts = float(st.get('ts') or 0.0)
+        # Decay old strikes after ~5 minutes
+        if last_ts and (now - last_ts) > 300.0:
+            st['count'] = 0.0
+        st['count'] = float(st.get('count') or 0.0) + float(severity)
+        st['ts'] = now
+        c = float(st.get('count') or 0.0)
+        # Escalate: strikes drive slow-mode and temporary blocks
+        if c >= 4.0:
+            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_long)
+        elif c >= 3.0:
+            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_short)
+        elif c >= 2.0:
+            spam_slow_until[user] = max(float(spam_slow_until.get(user) or 0.0), now + slow_seconds)
     except Exception:
         pass
-    
-    return True, ""
 
-def _spam_auto_split_with_rate_limit(username: str, text: str, max_chars: int = 500) -> tuple[bool, list[str], str]:
-    """4. Auto-Split with Rate Limiting - Split large messages and apply rate limiting."""
-    if not text or len(text) <= max_chars:
-        return True, [text] if text else [], ""
-    
-    # Split message into chunks
-    chunks = []
-    
-    # Try to split by paragraphs first
-    paragraphs = text.split('\n\n')
-    current_chunk = ""
-    
-    for paragraph in paragraphs:
-        if len(current_chunk) + len(paragraph) + 2 <= max_chars:
-            if current_chunk:
-                current_chunk += '\n\n' + paragraph
-            else:
-                current_chunk = paragraph
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = paragraph
-            else:
-                # Paragraph is too long, split by sentences
-                sentences = re.split(r'[.!?]+', paragraph)
-                temp_chunk = ""
-                for sentence in sentences:
-                    if sentence.strip():
-                        sentence = sentence.strip() + '.'
-                        if len(temp_chunk) + len(sentence) + 1 <= max_chars:
-                            if temp_chunk:
-                                temp_chunk += ' ' + sentence
-                            else:
-                                temp_chunk = sentence
-                        else:
-                            if temp_chunk:
-                                chunks.append(temp_chunk)
-                            temp_chunk = sentence
-                if temp_chunk:
-                    current_chunk = temp_chunk
-    
-    if current_chunk:
-        chunks.append(current_chunk)
-    
-    # If still too long, split by words
-    final_chunks = []
-    for chunk in chunks:
-        if len(chunk) <= max_chars:
-            final_chunks.append(chunk)
-        else:
-            words = chunk.split()
-            temp_chunk = ""
-            for word in words:
-                if len(temp_chunk) + len(word) + 1 <= max_chars:
-                    if temp_chunk:
-                        temp_chunk += ' ' + word
-                    else:
-                        temp_chunk = word
-                else:
-                    if temp_chunk:
-                        final_chunks.append(temp_chunk)
-                    temp_chunk = word
-            if temp_chunk:
-                final_chunks.append(temp_chunk)
-    
-    # Apply rate limiting - 1 message per second for split parts
-    now = time.time()
-    scheduled_chunks = []
-    
-    for i, chunk in enumerate(final_chunks):
-        scheduled_time = now + i  # 1 second delay between chunks
-        spam_split_queue[username].append((scheduled_time, chunk))
-        scheduled_chunks.append(chunk)
-    
-    return False, scheduled_chunks, f"Large message auto-split into {len(final_chunks)} parts. Parts will be sent at 1-second intervals to prevent flooding."
-
-def _spam_individual_slow_mode_check(username: str) -> tuple[bool, str]:
-    """5. Individual Slow Mode - Check if user is in slow mode."""
-    now = time.time()
-    
-    if username in spam_slow_until and now < spam_slow_until[username]:
-        remaining = int(spam_slow_until[username] - now)
-        return False, f"You are in slow mode. Please wait {remaining} seconds before sending another message."
-    
-    return True, ""
-
-def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
-    """6. Intelligent Content Pattern Analysis - Smart about legitimate content."""
-    if not text:
-        return True, ""
-    
-    # SMART FILTERING: Don't flag whitelisted content
-    if _spam_is_whitelisted_content(text):
-        return True, ""
-    
-    # Check for excessive whitespace (but be more lenient)
-    whitespace_ratio = len(re.findall(r'\s', text)) / len(text) if text else 0
-    if whitespace_ratio > 0.85:  # Increased from 0.7 to 0.85
-        return False, "Message contains excessive whitespace. Please use normal formatting."
-    
-    # Check for repeated characters (but ignore common patterns)
-    repeated_chars = re.findall(r'(.)\1{15,}', text)  # Increased from 10+ to 15+ characters
-    if repeated_chars:
-        # Allow common repeated patterns like "hahaha", "lololol", "nooooo"
-        allowed_repeated = {'a', 'e', 'h', 'l', 'o', 'n', 's', 't'}
-        if not all(char.lower() in allowed_repeated for char in repeated_chars):
-            return False, "Message contains excessive repeated characters. Please use normal text."
-    
-    # Check for HTML/CSS patterns (but be more selective)
-    suspicious_html_patterns = [
-        r'<script[^>]*>',  # Scripts are definitely suspicious
-        r'<iframe[^>]*>',  # Iframes are suspicious
-        r'javascript:',    # JavaScript URLs are suspicious
-        r"on\w+\s*=\s*["'][^"']*["']",  # Event handlers are suspicious
-    ]
-    
-    html_matches = 0
-    for pattern in suspicious_html_patterns:
-        html_matches += len(re.findall(pattern, text, re.IGNORECASE))
-    
-    if html_matches > 2:  # Reduced threshold, focus on truly suspicious patterns
-        return False, "Message appears to contain potentially malicious code. Please use plain text for chat."
-    
-    # Check for excessive line breaks (but be more lenient)
-    line_breaks = text.count("\n")
-    line_breaks = text.count("\n")
-    if line_breaks > 30:  # Increased from 20 to 30
-        return False, "Message contains too many line breaks. Please format your message more concisely."
-    
-    # Check for massive code dumps (but allow reasonable code sharing)
-    if len(text) > 2000:  # Only check very long messages
-        code_indicators = [
-            r'function\s+\w+\s*\(',
-            r'class\s+\w+\s*[:{]',
-            r'\w+\s*=\s*function\s*\(',
-            r'import\s+\w+',
-            r'from\s+\w+\s+import'
-        ]
-        
-        code_matches = 0
-        for pattern in code_indicators:
-            code_matches += len(re.findall(pattern, text, re.IGNORECASE))
-        
-        if code_matches > 10:  # Only flag obvious code dumps
-            return False, "Message appears to be a large code dump. Please use a code sharing service for large code blocks."
-    
-    return True, ""
-    
-    # Check for excessive whitespace
-    whitespace_ratio = len(re.findall(r'\s', text)) / len(text) if text else 0
-    if whitespace_ratio > 0.7:
-        return False, "Message contains excessive whitespace. Please use normal formatting."
-    
-    # Check for repeated characters
-    repeated_chars = re.findall(r'(.)\1{10,}', text)  # 10+ repeated characters
-    if repeated_chars:
-        return False, "Message contains excessive repeated characters. Please use normal text."
-    
-    # Check for HTML/CSS patterns
-    html_patterns = [
-        r'<div[^>]*>',
-        r'<script[^>]*>',
-        r'<style[^>]*>',
-        r'<br\s*/?>',
-        r'&[a-zA-Z]+;',
-        r'style\s*=\s*["\'][^"\']*["\']'
-    ]
-    
-    html_matches = 0
-    for pattern in html_patterns:
-        html_matches += len(re.findall(pattern, text, re.IGNORECASE))
-    
-    if html_matches > 5:
-        return False, "Message appears to contain HTML/CSS code dumps. Please use plain text for chat."
-    
-    # Check for excessive line breaks
-    line_breaks = text.count('\n')
-    if line_breaks > 20:
-        return False, "Message contains too many line breaks. Please format your message more concisely."
-    
-    # Check for code block patterns
-    code_patterns = [
-        r'```[\s\S]*```',
-        r'`[^`\n]{50,}`',
-        r'^\s*[\w\-]+\s*:\s*[\w\-]+\s*;?\s*$'  # CSS-like patterns
-    ]
-    
-    code_matches = 0
-    for pattern in code_patterns:
-        code_matches += len(re.findall(pattern, text, re.MULTILINE))
-    
-    if code_matches > 10:
-        return False, "Message appears to contain large code blocks. Please use a code sharing service for large code snippets."
-    
-    return True, ""
-
-def _spam_record_violation(username: str, violation_type: str, severity: int = 1):
-    """Record a spam violation for progressive sanctions."""
-    now = time.time()
-    user_strikes = spam_strikes[username]
-    
-    user_strikes['count'] += severity
-    user_strikes['last_violation'] = now
-    user_strikes['violations'].append({
-        'type': violation_type,
-        'timestamp': now,
-        'severity': severity
-    })
-    
-    # Clean old violations (older than 1 hour)
-    user_strikes['violations'] = [
-        v for v in user_strikes['violations'] 
-        if now - v['timestamp'] < 3600
-    ]
-    
-    # Recalculate strike count based on recent violations
-    user_strikes['count'] = sum(v['severity'] for v in user_strikes['violations'])
-
-def _spam_progressive_sanctions(username: str) -> tuple[bool, str]:
-    """7. Progressive Sanction System - Apply escalating punishments."""
-    user_strikes = spam_strikes[username]
-    strike_count = user_strikes['count']
-    now = time.time()
-    
-    if strike_count == 0:
-        return True, ""
-    
-    # First violation (1-2 strikes) - Warning
-    if strike_count <= 2:
-        return False, "⚠️ Warning: Please follow chat guidelines. Continued violations may result in restrictions."
-    
-    # Second violation (3-4 strikes) - Temporary slow mode (30 seconds)
-    elif strike_count <= 4:
-        spam_slow_until[username] = now + 30
-        return False, "🐌 Slow mode applied (30 seconds). Please wait before sending another message."
-    
-    # Third violation (5+ strikes) - Extended slow mode (2 minutes)
-    elif strike_count >= 5:
-        spam_slow_until[username] = now + 120
-        return False, "🚫 Extended slow mode applied (2 minutes). Multiple violations detected. Please review chat guidelines."
-    
-    return True, ""
-
-def _spam_process_split_queue(username: str):
-    """Process queued auto-split message chunks."""
+def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment: bool = False):
     try:
+        if not username:
+            return True, None
+        # Superadmins bypass spam gates to avoid accidental lockouts
+        try:
+            if username in SUPERADMINS:
+                return True, None
+        except Exception:
+            pass
+
         now = time.time()
-        split_queue = spam_split_queue[username]
-        
-        # Process ready chunks
-        ready_chunks = []
-        remaining_chunks = []
-        
-        for scheduled_time, chunk in split_queue:
-            if now >= scheduled_time:
-                ready_chunks.append(chunk)
-            else:
-                remaining_chunks.append((scheduled_time, chunk))
-        
-        # Update queue
-        split_queue[:] = remaining_chunks
-        
-        return ready_chunks
-                
+
+        # Load configurable thresholds with safe fallbacks
+        try:
+            max_chars = int(get_setting('SPAM_MAX_CHARS', '1000') or 1000)
+        except Exception:
+            max_chars = 1000
+        try:
+            max_bytes = int(get_setting('SPAM_MAX_BYTES', '4000') or 4000)
+        except Exception:
+            max_bytes = 4000
+        try:
+            rate_window = float(get_setting('SPAM_WINDOW_SECONDS', '10') or 10.0)
+        except Exception:
+            rate_window = 10.0
+        try:
+            min_gap = float(get_setting('SPAM_MIN_GAP_SECONDS', '0.7') or 0.7)
+        except Exception:
+            min_gap = 0.7
+        try:
+            max_per_window = int(get_setting('SPAM_MAX_PER_WINDOW', '8') or 8)
+        except Exception:
+            max_per_window = 8
+        try:
+            sensitivity = float(get_setting('SPAM_SENSITIVITY', '1.0') or 1.0)
+        except Exception:
+            sensitivity = 1.0
+        if sensitivity < 0.25:
+            sensitivity = 0.25
+        elif sensitivity > 3.0:
+            sensitivity = 3.0
+
+        # Hard block gate (user fully blocked for a short period)
+        try:
+            block_until = float(spam_block_until.get(username) or 0.0)
+        except Exception:
+            block_until = 0.0
+        if block_until:
+            if now < block_until:
+                return False, "You are temporarily blocked from sending messages due to spam-like activity."
+            # Expired
+            spam_block_until.pop(username, None)
+
+        # Slow mode gate (per-user, any channel)
+        try:
+            slow_until = float(spam_slow_until.get(username) or 0.0)
+        except Exception:
+            slow_until = 0.0
+        if slow_until and now < slow_until:
+            return False, "Slow mode is enabled for you. Please wait a few seconds before sending another message."
+        if slow_until and now >= slow_until:
+            spam_slow_until.pop(username, None)
+
+        # Choose per-channel history and recent text buffers
+        if kind == 'dm':
+            hist = spam_dm[username]
+            recent = spam_recent_dm[username]
+        elif kind == 'gdm':
+            hist = spam_gdm[username]
+            recent = spam_recent_gdm[username]
+        else:
+            hist = spam_public[username]
+            recent = spam_recent_public[username]
+
+        # Baseline rate limit: ~1 msg / min_gap, max ~max_per_window msgs / rate_window
+        window = rate_window
+        hist[:] = [t for t in hist if now - t <= window]
+        if hist and ((now - hist[-1]) < min_gap or len(hist) >= max_per_window):
+            base_sev = 1.5 if len(hist) >= max_per_window else 1.0
+            _spam_record_strike(username, severity=base_sev * sensitivity)
+            return False, "You are sending messages too quickly; please slow down."
+        hist.append(now)
+
+        # Trim and normalise text for further checks
+        raw = (text or '').strip()
+        if raw:
+            # Message length / payload size limits (server-side backstop).
+            try:
+                if len(raw) > max_chars or len(raw.encode('utf-8')) > max_bytes:
+                    _spam_record_strike(username, severity=1.0 * sensitivity)
+                    return False, "This message is too large. Please shorten it."
+            except Exception:
+                if len(raw) > max_chars:
+                    _spam_record_strike(username, severity=1.0 * sensitivity)
+                    return False, "This message is too large. Please shorten it."
+
+            # Compression-based payload check: catch large encoded/base64-style blobs
+            try:
+                if len(raw) > 200:
+                    raw_bytes = raw.encode('utf-8', errors='ignore')
+                    comp = zlib.compress(raw_bytes, level=3)
+                    if len(comp) > max_bytes:
+                        _spam_record_strike(username, severity=1.0 * sensitivity)
+                        return False, "This message looks like a large encoded payload. Please send it as a file instead of pasting it."
+            except Exception:
+                pass
+
+            # Content pattern analysis: HTML dumps / excessive breaks / giant walls
+            lower = raw.lower()
+            try:
+                tag_hits = sum(lower.count(tag) for tag in ('<div', '<script', '<style', '<html', '<body'))
+            except Exception:
+                tag_hits = 0
+            br_hits = lower.count('<br') if '<' in lower else 0
+            newline_hits = raw.count('\n')
+            if tag_hits >= 10 or br_hits >= 20 or newline_hits >= 80:
+                _spam_record_strike(username, severity=1.0 * sensitivity)
+                return False, "Large HTML/code dumps are not allowed. Please send files or smaller snippets."
+
+            # Duplicate / near-duplicate detection in the last 60 seconds
+            recent_window = 60.0
+            recent[:] = [(ts, txt) for (ts, txt) in recent if now - ts <= recent_window]
+            norm = ' '.join(raw.split())  # collapse whitespace
+            for ts, prev in recent:
+                if not prev:
+                    continue
+                if norm == prev:
+                    _spam_record_strike(username, severity=1.0 * sensitivity)
+                    return False, "Duplicate message detected. Please avoid sending the same content repeatedly."
+                try:
+                    if len(norm) >= 40 and len(prev) >= 40:
+                        ratio = difflib.SequenceMatcher(None, norm, prev).ratio()
+                        if ratio > 0.97:
+                            _spam_record_strike(username, severity=0.7 * sensitivity)
+                            return False, "Very similar message detected. Please avoid minor variations of the same content."
+                except Exception:
+                    pass
+            recent.append((now, norm))
+
+        # For attachment-only messages, we still rely on rate limiting above.
+        return True, None
     except Exception:
-        return []
-
-def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachment: bool = False, get_setting_func=None):
-    """
-    Intelligent Comprehensive Anti-Spam Gate with Smart Content Recognition.
-    
-    This system is designed to:
-    - NEVER block common words like "a", "e", "i", "ok", "hi", "lol", etc.
-    - Focus on USER BEHAVIOR patterns rather than content patterns
-    - Only flag actual spam behavior, not legitimate single letters or words
-    
-    Returns:
-        (allowed: bool, reason: str, auto_split_chunks: list[str] or None)
-    """
-    try:
-        if not username or not text:
-            return True, "", None
-        
-        # SMART PRE-CHECK: Always allow whitelisted content
-        if _spam_is_whitelisted_content(text):
-            return True, "", None
-        
-        # Get settings with defaults
-        max_chars = int(get_setting_func('SPAM_MAX_CHARS', '1000')) if get_setting_func else 1000
-        max_bytes = int(get_setting_func('SPAM_MAX_BYTES', '8192')) if get_setting_func else 8192
-        
-        # 5. Individual Slow Mode Check (first, as it's time-based)
-        allowed, reason = _spam_individual_slow_mode_check(username)
-        if not allowed:
-            return False, reason, None
-        
-        # 1. Message Length Limit
-        allowed, reason = _spam_message_length_check(text, max_chars)
-        if not allowed:
-            _spam_record_violation(username, "message_too_long", 1)
-            # Check if we should auto-split instead
-            if len(text) <= max_chars * 3:  # Only auto-split if not excessively long
-                allowed, chunks, split_reason = _spam_auto_split_with_rate_limit(username, text, max_chars // 2)
-                if not allowed:  # Auto-split was applied
-                    return False, split_reason, chunks
-            else:
-                return False, reason, None
-        
-        # 2. Duplicate & Near-Duplicate Detection
-        allowed, reason = _spam_duplicate_detection(username, text)
-        if not allowed:
-            _spam_record_violation(username, "duplicate_content", 2)
-            return False, reason, None
-        
-        # 3. Payload Size Monitoring
-        allowed, reason = _spam_payload_size_check(text, max_bytes)
-        if not allowed:
-            _spam_record_violation(username, "payload_too_large", 2)
-            return False, reason, None
-        
-        # 6. Content Pattern Analysis
-        allowed, reason = _spam_content_pattern_analysis(text)
-        if not allowed:
-            _spam_record_violation(username, "suspicious_patterns", 1)
-            return False, reason, None
-        
-        # 7. Progressive Sanction System
-        allowed, reason = _spam_progressive_sanctions(username)
-        if not allowed:
-            return False, reason, None
-        
-        # All checks passed
-        return True, "", None
-        
-    except Exception as e:
-        # Fail safe: allow message but log error
-        print(f"Anti-spam error: {e}")
-        return True, "", None
-
-    """Process queued auto-split message chunks."""
-    try:
-        now = time.time()
-        split_queue = spam_split_queue[username]
-        
-        # Process ready chunks
-        ready_chunks = []
-        remaining_chunks = []
-        
-        for ts, chunk in split_queue:
-            if now >= ts:
-                ready_chunks.append(chunk)
-            else:
-                remaining_chunks.append((ts, chunk))
-        
-        # Update queue
-        split_queue[:] = remaining_chunks
-        
-        return ready_chunks
-                
-    except Exception:
-        return []
-
+        # Fail open on unexpected errors to avoid breaking chat
+        return True, None
 
 # Socket.IO connection management
 @socketio.on('connect')
@@ -2918,13 +2046,6 @@ def _session_user_valid() -> bool:
 @app.before_request
 def _enforce_bans_global():
     try:
-        # Emergency shutdown auto-trigger check (periodic)
-        try:
-            _emergency_auto_trigger_check(
-                get_db_func=get_db, db_path=DB_PATH
-            )
-        except Exception:
-            pass
         ep = (request.endpoint or '')
         if ep and (ep.startswith('static') or ep in ('healthcheck',)):
             return
@@ -3022,33 +2143,40 @@ def _clear_downtime_ips():
         pass
 
 def _is_emergency_shutdown() -> bool:
-    """Return True if emergency shutdown is active."""
+    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
+
+    This is used to enforce a global emergency read-only mode.
+    """
     try:
-        return emergency_shutdown_active
+        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
     except Exception:
         return False
+
 def _emergency_write_block(user: str | None = None) -> bool:
-    """Return True if writes should be blocked for this user due to emergency shutdown."""
+    """Return True if writes should be blocked for this user due to emergency shutdown.
+
+    Superadmins are allowed to continue making changes so they can manage recovery.
+    """
     try:
-        allowed, reason = _emergency_check_gate(
-            username=user, 
-            operation="message", 
-            superadmins=SUPERADMINS
-        )
-        
-        if not allowed:
-            # Notify user of the block reason
-            try:
-                if user and reason:
-                    emit("system_message", reason, room=f"user:{user}")
-            except Exception:
-                pass
-            return True
-        
-        return False
-    except Exception:
-        # Fail safe: block writes during errors
+        if not _is_emergency_shutdown():
+            return False
+        # Allow superadmins to keep writing during emergency
+        try:
+            if user and is_superadmin(user):
+                return False
+        except Exception:
+            pass
+        # Best-effort notification to the user; do not persist
+        try:
+            if user:
+                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
+        except Exception:
+            pass
         return True
+    except Exception:
+        return False
+
+@app.before_request
 def _downtime_gate():
     try:
         # Emergency shutdown piggybacks on downtime gate: either flag triggers the gate.
@@ -3305,207 +2433,6 @@ def api_whoami():
         return jsonify({ 'session': sess, 'x_dbx_user': hdr_u, 'q_dbx_user': q_u, 'cookie_dbx_user': c_u, 'effective': eff, 'is_superadmin': bool(eff in SUPERADMINS) })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-# Emergency Shutdown API Routes
-@app.route('/api/emergency/status')
-def api_emergency_shutdown_status():
-    """Get current emergency shutdown status."""
-    try:
-        username = session.get('username', '')
-        
-        # Only admins and superadmins can view status
-        if not (is_admin(username) or is_superadmin(username)):
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        status = get_emergency_status()
-        
-        # Include snapshot for superadmins only
-        if not is_superadmin(username):
-            status.pop('snapshot', None)
-        
-        return jsonify({'ok': True, 'status': status})
-        
-    except Exception as e:
-        return jsonify({'error': f'Failed to get status: {e}'}), 500
-
-@app.route('/api/emergency/activate', methods=['POST'])
-def api_emergency_shutdown_activate():
-    """Activate emergency shutdown (superadmin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only superadmins can activate emergency shutdown
-        if not is_superadmin(username):
-            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
-        
-        data = request.get_json() or {}
-        trigger = data.get('trigger', 'ADMIN_COMMAND')
-        auto_backup = data.get('auto_backup', True)
-        
-        # Helper function to notify all users
-        def notify_all_users(message):
-            try:
-                emit('emergency_notification', {'message': message}, broadcast=True)
-            except Exception as e:
-                _emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
-        
-        success = emergency_shutdown_activate(
-            trigger=trigger,
-            admin=username,
-            auto_backup=auto_backup,
-            db_path=DB_PATH,
-            get_db_func=get_db,
-            get_setting_func=get_setting,
-            set_setting_func=set_setting,
-            connected_sockets=connected_sockets,
-            spam_strikes=spam_strikes,
-            notify_func=notify_all_users
-        )
-        
-        if success:
-            return jsonify({'ok': True, 'message': 'Emergency shutdown activated'})
-        else:
-            return jsonify({'error': 'Failed to activate emergency shutdown'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': f'Failed to activate: {e}'}), 500
-
-@app.route('/api/emergency/deactivate', methods=['POST'])
-def api_emergency_shutdown_deactivate():
-    """Deactivate emergency shutdown (superadmin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only superadmins can deactivate emergency shutdown
-        if not is_superadmin(username):
-            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
-        
-        # Helper function to notify all users
-        def notify_all_users(message):
-            try:
-                emit('emergency_notification', {'message': message}, broadcast=True)
-            except Exception as e:
-                _emergency_log(f"Failed to send emergency notification: {e}", "ERROR")
-        
-        success = emergency_shutdown_deactivate(
-            admin=username,
-            set_setting_func=set_setting,
-            notify_func=notify_all_users
-        )
-        
-        if success:
-            return jsonify({'ok': True, 'message': 'Emergency shutdown deactivated'})
-        else:
-            return jsonify({'error': 'Failed to deactivate emergency shutdown'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': f'Failed to deactivate: {e}'}), 500
-
-@app.route('/api/emergency/stage', methods=['POST'])
-def api_emergency_shutdown_set_stage():
-    """Set recovery stage (superadmin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only superadmins can set recovery stage
-        if not is_superadmin(username):
-            return jsonify({'error': 'Unauthorized - Superadmin required'}), 403
-        
-        data = request.get_json() or {}
-        stage = data.get('stage', 0)
-        
-        if not isinstance(stage, int) or stage < 0 or stage > 3:
-            return jsonify({'error': 'Invalid stage - must be 0-3'}), 400
-        
-        success = emergency_shutdown_set_stage(stage, username)
-        
-        if success:
-            return jsonify({'ok': True, 'message': f'Recovery stage set to {stage}'})
-        else:
-            return jsonify({'error': 'Failed to set recovery stage'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': f'Failed to set stage: {e}'}), 500
-
-@app.route('/api/emergency/lock_user', methods=['POST'])
-def api_emergency_shutdown_lock_user():
-    """Lock a user during emergency (admin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only admins and superadmins can lock users
-        if not (is_admin(username) or is_superadmin(username)):
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        data = request.get_json() or {}
-        target_user = data.get('username', '').strip()
-        
-        if not target_user:
-            return jsonify({'error': 'Username required'}), 400
-        
-        # Prevent locking superadmins
-        if target_user in SUPERADMINS:
-            return jsonify({'error': 'Cannot lock superadmin'}), 400
-        
-        success = emergency_shutdown_lock_user(target_user, username)
-        
-        if success:
-            return jsonify({'ok': True, 'message': f'User {target_user} locked'})
-        else:
-            return jsonify({'error': 'Failed to lock user'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': f'Failed to lock user: {e}'}), 500
-
-@app.route('/api/emergency/unlock_user', methods=['POST'])
-def api_emergency_shutdown_unlock_user():
-    """Unlock a user during emergency (admin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only admins and superadmins can unlock users
-        if not (is_admin(username) or is_superadmin(username)):
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        data = request.get_json() or {}
-        target_user = data.get('username', '').strip()
-        
-        if not target_user:
-            return jsonify({'error': 'Username required'}), 400
-        
-        success = emergency_shutdown_unlock_user(target_user, username)
-        
-        if success:
-            return jsonify({'ok': True, 'message': f'User {target_user} unlocked'})
-        else:
-            return jsonify({'error': 'Failed to unlock user'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': f'Failed to unlock user: {e}'}), 500
-
-@app.route('/api/emergency/logs')
-def api_emergency_shutdown_logs():
-    """Get emergency shutdown logs (admin only)."""
-    try:
-        username = session.get('username', '')
-        
-        # Only admins and superadmins can view logs
-        if not (is_admin(username) or is_superadmin(username)):
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        # Get pagination parameters
-        page = max(1, int(request.args.get('page', 1)))
-        per_page = max(1, min(100, int(request.args.get('per_page', 50))))
-        
-        result = get_emergency_logs(page, per_page)
-        
-        if 'error' in result:
-            return jsonify({'error': result['error']}), 500
-        
-        return jsonify({'ok': True, **result})
-        
-    except Exception as e:
-        return jsonify({'error': f'Failed to get logs: {e}'}), 500
-
 
 @app.route('/smite', methods=['GET','POST'])
 def api_smite():
@@ -6508,15 +5435,6 @@ def register():
     if "user_id" in session:
         return redirect(url_for("chat"))
     
-    # Emergency shutdown check
-    try:
-        allowed, reason = _emergency_check_gate(
-            username=None, operation="register", superadmins=SUPERADMINS
-        )
-        if not allowed:
-            return render_template_string(REGISTER_HTML, error=reason), 503
-    except Exception:
-        pass
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(REGISTER_HTML, error="Your IP address is banned"), 403
@@ -6596,15 +5514,6 @@ def login():
     if "user_id" in session:
         return redirect(url_for("chat"))
     
-    # Emergency shutdown check
-    try:
-        allowed, reason = _emergency_check_gate(
-            username=None, operation="login", superadmins=SUPERADMINS
-        )
-        if not allowed:
-            return render_template_string(LOGIN_HTML, error=reason), 503
-    except Exception:
-        pass
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(LOGIN_HTML, error="Your IP address is banned"), 403
@@ -7826,6 +6735,21 @@ def on_gdm_send_v1(data):
     try:
         tid = int((data or {}).get('thread_id', 0))
     except Exception:
+        tid = 0
+    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
+    try:
+        now = time.time()
+        window = 10.0
+        hist = spam_gdm[me]
+        hist[:] = [t for t in hist if now - t <= window]
+        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
+            try:
+                emit("system_message", "You are sending messages too quickly", room=f'user:{me}')
+            except Exception:
+                pass
+            return
+        hist.append(now)
+    except Exception:
         pass
     # Platform gates
     try:
@@ -7835,18 +6759,6 @@ def on_gdm_send_v1(data):
             return
     except Exception:
         pass
-
-    # Comprehensive anti-spam checking
-    text = (data or {}).get("text", "").strip()
-    has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("gdm", me, text, has_attachment=has_attachment, get_setting_func=get_setting)
-    if not spam_ok:
-        try:
-            emit("system_message", spam_msg, room=f"user:{me}")
-        except Exception:
-            pass
-        return
-
     text = (data or {}).get('text', '').strip()
     if not me or not tid or not (text or (data or {}).get('filename')):
         return
@@ -8130,6 +7042,21 @@ def on_send_message(data):
             return
     except Exception:
         pass
+    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
+    try:
+        now = time.time()
+        window = 10.0
+        hist = spam_public[username]
+        hist[:] = [t for t in hist if now - t <= window]
+        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
+            try:
+                emit("system_message", "You are sending messages too quickly", room=f'user:{username}')
+            except Exception:
+                pass
+            return
+        hist.append(now)
+    except Exception:
+        pass
 
     # Enforce IP bans (private first then public)
     try:
@@ -8188,20 +7115,8 @@ def on_send_message(data):
             return
         if get_setting('ANNOUNCEMENTS_ONLY','0')=='1' and not adminish:
             return
-
     except Exception:
         pass
-    # Comprehensive anti-spam checking
-    text = (data or {}).get("text", "").strip()
-    has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("public", username, text, has_attachment=has_attachment, get_setting_func=get_setting)
-    if not spam_ok:
-        try:
-            emit("system_message", spam_msg, room=f"user:{username}")
-        except Exception:
-            pass
-        return
-
     text = (data.get("text") or "").strip()
     attachment = None
     
@@ -8838,18 +7753,6 @@ def on_dm_send(data):
             return
     except Exception:
         pass
-
-    # Comprehensive anti-spam checking
-    text = (data or {}).get("text", "").strip()
-    has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("dm", username, text, has_attachment=has_attachment, get_setting_func=get_setting)
-    if not spam_ok:
-        try:
-            emit("system_message", spam_msg, room=f"user:{username}")
-        except Exception:
-            pass
-        return
-
     to_user = (data or {}).get("to", "").strip()
     text = (data or {}).get("text", "").strip()
     if not to_user or not (text or (data or {}).get("filename")):
@@ -9407,584 +8310,27 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Discord-Inspired Mobile Design - Comfortable and Spacious */
-      
-      /* Small phones (up to 480px) - Discord-like comfortable layout */
-      @media (max-width: 480px) {
-        .app { 
-          display: flex !important; 
-          flex-direction: row !important; 
-          gap: 0 !important; 
-          height: 100vh; 
-          overflow: hidden;
-          background: var(--bg);
-        }
-        
-        /* Left sidebar - Discord server list style */
-        #leftbar { 
-          width: 72px !important; 
-          min-width: 72px !important; 
-          max-width: 72px !important;
-          padding: 12px 8px !important;
-          overflow-y: auto;
-          font-size: 12px;
-          background: var(--sidebar-bg, #202225);
-          border-right: 1px solid var(--border);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        
-        /* Right sidebar - Discord member list style */
-        #rightbar { 
-          width: 240px !important; 
-          min-width: 200px !important; 
-          max-width: 280px !important;
-          padding: 16px 12px !important;
-          overflow-y: auto;
-          font-size: 14px;
-          background: var(--sidebar-bg, #2f3136);
-          border-left: 1px solid var(--border);
-          line-height: 1.5;
-        }
-        
-        /* Main chat area - Discord chat style */
-        #main { 
-          flex: 1 !important; 
-          min-width: 0 !important;
-          padding: 0 !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-          background: var(--bg);
-        }
-        
-        /* Chat header area */
-        .chat-header {
-          padding: 12px 16px;
-          border-bottom: 1px solid var(--border);
-          background: var(--bg);
-          flex-shrink: 0;
-        }
-        
-        /* Chat messages area - Discord message style */
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 16px !important;
-          font-size: 15px !important;
-          line-height: 1.5 !important;
-          background: var(--bg);
-        }
-        
-        /* Message styling - Discord-like */
-        .message { 
-          font-size: 15px !important; 
-          line-height: 1.5 !important; 
-          padding: 8px 0 !important;
-          margin: 0 !important;
-          border-radius: 0;
-          background: transparent;
-          word-wrap: break-word;
-        }
-        
-        .message:hover {
-          background: rgba(79, 84, 92, 0.16) !important;
-          margin: 0 -16px !important;
-          padding: 8px 16px !important;
-          border-radius: 0;
-        }
-        
-        .username { 
-          font-size: 16px !important; 
-          font-weight: 600 !important;
-          margin-bottom: 2px;
-          display: inline-block;
-        }
-        
-        /* Input area - Discord-like */
-        .form-row { 
-          flex-shrink: 0;
-          padding: 16px !important;
-          background: var(--bg);
-          border-top: 1px solid var(--border);
-        }
-        
-        /* Text input - Discord style */
-        #textInput { 
-          font-size: 15px !important; 
-          padding: 12px 16px !important; 
-          min-height: 44px !important;
-          border-radius: 24px !important;
-          border: 1px solid var(--border);
-          background: var(--input-bg, #40444b);
-          color: var(--text);
-          width: 100%;
-          box-sizing: border-box;
-          resize: none;
-          line-height: 1.4;
-        }
-        
-        #textInput:focus {
-          outline: none;
-          border-color: var(--accent, #5865f2);
-          box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.3);
-        }
-        
-        /* Send button - Discord style */
-        #sendForm button { 
-          padding: 12px 20px !important; 
-          min-height: 44px !important; 
-          font-size: 14px !important;
-          font-weight: 600;
-          border-radius: 22px !important;
-          background: var(--accent, #5865f2) !important;
-          border: none;
-          color: white;
-          cursor: pointer;
-          margin-left: 8px;
-          transition: background-color 0.2s ease;
-        }
-        
-        #sendForm button:hover {
-          background: var(--accent-hover, #4752c4) !important;
-        }
-        
-        /* Left sidebar buttons - Discord server icons style */
-        #leftbar button { 
-          font-size: 11px !important; 
-          padding: 8px 4px !important;
-          min-height: 48px !important;
-          width: 48px;
-          border-radius: 50% !important;
-          background: var(--button-bg, #36393f);
-          border: none;
-          color: var(--text);
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          text-align: center;
-          line-height: 1.2;
-          word-break: break-word;
-        }
-        
-        #leftbar button:hover {
-          border-radius: 16px !important;
-          background: var(--accent, #5865f2) !important;
-          color: white;
-        }
-        
-        /* Right sidebar styling - Discord member list */
-        #rightbar button { 
-          font-size: 13px !important; 
-          padding: 8px 12px !important;
-          min-height: 36px !important;
-          width: 100%;
-          border-radius: 4px !important;
-          background: transparent;
-          border: 1px solid var(--border);
-          color: var(--text);
-          cursor: pointer;
-          margin-bottom: 4px;
-          text-align: left;
-          transition: background-color 0.2s ease;
-        }
-        
-        #rightbar button:hover {
-          background: rgba(79, 84, 92, 0.16) !important;
-        }
-        
-        /* User avatars - larger and more prominent */
-        img[style*="border-radius:50%"] {
-          border: 2px solid var(--border) !important;
-        }
-        
-        /* Status indicators - larger and more visible */
-        span[style*="position:absolute"][style*="border-radius:50%"] {
-          width: 12px !important;
-          height: 12px !important;
-          border: 3px solid var(--bg, #36393f) !important;
-        }
-        
-        /* Hide mobile nav - not needed in full screen */
-        #mobileNav { display: none !important; }
-        body { padding-bottom: 0 !important; }
-        
-        /* Scrollbar styling - Discord-like */
-        ::-webkit-scrollbar {
-          width: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-          background: rgba(79, 84, 92, 0.3);
-          border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-          background: rgba(79, 84, 92, 0.5);
-        }
+      /* Mobile responsive enhancements */
+      @media (max-width: 768px) {
+        .app { flex-direction: column; gap: 8px !important; }
+        #leftbar, #rightbar { display:none; }
+        body.show-leftbar #leftbar,
+        body.show-rightbar #rightbar { display:block; position:fixed; top:0; bottom:56px; left:0; right:0; width:auto; max-width:none; padding:12px; background:var(--bg); z-index:9997; overflow:auto; border:none; }
+        #main { order: 2; }
+        #mobileNav { display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; }
+        #mobileNav button { flex:1; background:transparent; color:#fff; border:none; font-size:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; }
+        #mobileBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9996; }
+        body.show-leftbar #mobileBackdrop,
+        body.show-rightbar #mobileBackdrop { display:block; }
+        header { position:sticky; top:0; background:var(--bg); z-index:5; padding-bottom:6px; }
+        .chat { min-height: calc(100vh - 56px - 160px); }
+        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:6px 0; }
+        #textInput { font-size:16px; padding:12px; min-height:44px; }
+        #sendForm button { padding:10px 12px; }
+        #fileInput { font-size:14px; }
+        #onlineBtn { padding:6px 8px; }
+        body { padding-bottom: 56px; }
       }
-      
-      /* Regular phones and small tablets (481px to 768px) - Enhanced Discord style */
-      @media (min-width: 481px) and (max-width: 768px) {
-        .app { 
-          display: flex !important; 
-          flex-direction: row !important; 
-          gap: 0 !important; 
-          height: 100vh; 
-          overflow: hidden;
-          background: var(--bg);
-        }
-        
-        /* Left sidebar - wider on larger phones */
-        #leftbar { 
-          width: 240px !important; 
-          min-width: 200px !important; 
-          max-width: 280px !important;
-          padding: 16px 12px !important;
-          overflow-y: auto;
-          font-size: 14px;
-          background: var(--sidebar-bg, #2f3136);
-          border-right: 1px solid var(--border);
-          line-height: 1.5;
-        }
-        
-        /* Right sidebar - comfortable width */
-        #rightbar { 
-          width: 240px !important; 
-          min-width: 200px !important; 
-          max-width: 280px !important;
-          padding: 16px 12px !important;
-          overflow-y: auto;
-          font-size: 14px;
-          background: var(--sidebar-bg, #2f3136);
-          border-left: 1px solid var(--border);
-          line-height: 1.5;
-        }
-        
-        /* Main chat area */
-        #main { 
-          flex: 1 !important; 
-          min-width: 0 !important;
-          padding: 0 !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-          background: var(--bg);
-        }
-        
-        /* Chat messages */
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 16px !important;
-          font-size: 15px !important;
-          line-height: 1.5 !important;
-          background: var(--bg);
-        }
-        
-        .message { 
-          font-size: 15px !important; 
-          line-height: 1.5 !important; 
-          padding: 8px 0 !important;
-          margin: 0 !important;
-          word-wrap: break-word;
-        }
-        
-        .message:hover {
-          background: rgba(79, 84, 92, 0.16) !important;
-          margin: 0 -16px !important;
-          padding: 8px 16px !important;
-        }
-        
-        .username { 
-          font-size: 16px !important; 
-          font-weight: 600 !important;
-        }
-        
-        /* Input area */
-        .form-row { 
-          flex-shrink: 0;
-          padding: 16px !important;
-          background: var(--bg);
-          border-top: 1px solid var(--border);
-        }
-        
-        #textInput { 
-          font-size: 15px !important; 
-          padding: 12px 16px !important; 
-          min-height: 44px !important;
-          border-radius: 24px !important;
-          border: 1px solid var(--border);
-          background: var(--input-bg, #40444b);
-          width: 100%;
-          box-sizing: border-box;
-        }
-        
-        #sendForm button { 
-          padding: 12px 20px !important; 
-          min-height: 44px !important; 
-          font-size: 14px !important;
-          font-weight: 600;
-          border-radius: 22px !important;
-          background: var(--accent, #5865f2) !important;
-          border: none;
-          color: white;
-          margin-left: 8px;
-        }
-        
-        /* Sidebar buttons */
-        #leftbar button, #rightbar button { 
-          font-size: 13px !important; 
-          padding: 10px 12px !important;
-          min-height: 40px !important;
-          border-radius: 4px !important;
-          background: transparent;
-          border: 1px solid var(--border);
-          color: var(--text);
-          width: 100%;
-          text-align: left;
-          margin-bottom: 4px;
-          cursor: pointer;
-          transition: background-color 0.2s ease;
-        }
-        
-        #leftbar button:hover, #rightbar button:hover {
-          background: rgba(79, 84, 92, 0.16) !important;
-        }
-        
-        /* Hide mobile nav */
-        #mobileNav { display: none !important; }
-        body { padding-bottom: 0 !important; }
-      }
-      
-      /* Regular phones and small tablets (481px to 768px) - Full screen with better proportions */
-      @media (min-width: 481px) and (max-width: 768px) {
-        .app { 
-          display: flex !important; 
-          flex-direction: row !important; 
-          gap: 4px !important; 
-          height: 100vh; 
-          overflow: hidden;
-        }
-        
-        /* Better proportioned sidebars */
-        #leftbar { 
-          width: 30% !important; 
-          min-width: 120px !important; 
-          max-width: 180px !important;
-          padding: 6px !important;
-          overflow-y: auto;
-          font-size: 12px;
-        }
-        #rightbar { 
-          width: 25% !important; 
-          min-width: 100px !important; 
-          max-width: 150px !important;
-          padding: 6px !important;
-          overflow-y: auto;
-          font-size: 12px;
-        }
-        
-        /* Main chat area */
-        #main { 
-          flex: 1 !important; 
-          min-width: 0 !important;
-          padding: 4px !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-        }
-        
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 6px !important;
-          font-size: 14px;
-        }
-        
-        .form-row { 
-          flex-shrink: 0;
-          padding: 6px !important;
-        }
-        
-        #textInput { 
-          font-size: 15px !important; 
-          padding: 10px !important; 
-          min-height: 40px !important;
-        }
-        
-        #sendForm button { 
-          padding: 10px 14px !important; 
-          min-height: 40px !important;
-        }
-        
-        /* Sidebar buttons */
-        #leftbar button, #rightbar button { 
-          font-size: 11px !important; 
-          padding: 6px 8px !important;
-          min-height: 36px !important;
-        }
-        
-        /* Hide mobile nav */
-        #mobileNav { display: none !important; }
-        body { padding-bottom: 0 !important; }
-      }
-      
-      /* Tablets and small laptops (769px to 1024px) - Standard full screen */
-      @media (min-width: 769px) and (max-width: 1024px) {
-        .app { 
-          gap: 8px !important; 
-          height: 100vh;
-          overflow: hidden;
-        }
-        #leftbar { 
-          width: 200px !important; 
-          min-width: 200px !important;
-          overflow-y: auto;
-        }
-        #rightbar { 
-          width: 180px !important; 
-          min-width: 180px !important;
-          overflow-y: auto;
-        }
-        #main { 
-          flex: 1; 
-          padding: 6px !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-        }
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 8px !important;
-        }
-        .form-row { flex-shrink: 0; }
-        #textInput { font-size: 15px !important; }
-        
-        /* No mobile nav on tablets */
-        #mobileNav { display: none !important; }
-        body { padding-bottom: 0 !important; }
-      }
-      
-      /* Large tablets and laptops (1025px to 1440px) - Optimal full screen */
-      @media (min-width: 1025px) and (max-width: 1440px) {
-        .app { 
-          gap: 12px !important; 
-          max-width: none !important;
-          height: 100vh;
-          overflow: hidden;
-        }
-        #leftbar { 
-          width: 240px !important; 
-          min-width: 240px !important;
-          overflow-y: auto;
-        }
-        #rightbar { 
-          width: 220px !important; 
-          min-width: 220px !important;
-          overflow-y: auto;
-        }
-        #main { 
-          flex: 1; 
-          padding: 10px !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-        }
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 12px !important;
-        }
-        .form-row { flex-shrink: 0; }
-      }
-      
-      /* Large screens (1441px+) - Maximum full screen */
-      @media (min-width: 1441px) {
-        .app { 
-          gap: 16px !important; 
-          max-width: none !important;
-          height: 100vh;
-          overflow: hidden;
-        }
-        #leftbar { 
-          width: 280px !important; 
-          min-width: 280px !important;
-          overflow-y: auto;
-        }
-        #rightbar { 
-          width: 260px !important; 
-          min-width: 260px !important;
-          overflow-y: auto;
-        }
-        #main { 
-          flex: 1; 
-          padding: 12px !important;
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          overflow: hidden;
-        }
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 16px !important;
-        }
-        .form-row { flex-shrink: 0; }
-      }
-      
-      /* Landscape orientation - maintain full screen */
-      @media (max-width: 768px) and (orientation: landscape) {
-        .app { height: 100vh !important; }
-        .chat { padding: 4px !important; }
-        .form-row { padding: 4px !important; }
-        header { padding: 4px 6px !important; }
-      }
-      
-      /* High DPI displays */
-      @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-        button, input { border-width: 0.5px; }
-        .message { border-width: 0.5px; }
-      }
-      
-      /* Ensure all elements stay within viewport */
-      * { 
-        box-sizing: border-box; 
-      }
-      
-      /* Prevent horizontal overflow */
-      body, html { 
-        overflow-x: hidden; 
-        height: 100vh;
-        margin: 0;
-        padding: 0;
-      }
-      
-      /* Text wrapping to prevent overflow */
-      .message, .username, button, input { 
-        word-wrap: break-word; 
-        overflow-wrap: break-word; 
-        hyphens: auto;
-      }
-
-      @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-        button, input { border-width: 0.5px; }
-        .message { border-width: 0.5px; }
-      }
-
       /* Composer layout */
       #sendForm .form-row { display:flex; gap:8px; align-items:flex-start; }
       #textInput { flex:1; width:100%; border:1px solid var(--border); border-radius:10px; resize:vertical; background:var(--card); color:var(--primary); padding:10px 12px; box-shadow:0 1px 0 rgba(0,0,0,0.02) inset; }
@@ -11488,7 +9834,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}${badge}</span>
@@ -11508,7 +9854,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}</span>
@@ -11601,7 +9947,7 @@ CHAT_HTML = """
                 <div style='display:flex;flex-direction:column;'>
                   <div style='display:flex;align-items:center;gap:6px;'>
                     <strong>@${p.username||''}</strong>
-                    <span style='display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                    <span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                   </div>
                   <div style='color:#777;white-space:normal;word-break:break-word;overflow-wrap:anywhere;margin-top:4px'>${bio}</div>
                 </div>
@@ -11781,7 +10127,7 @@ CHAT_HTML = """
                   <span style='display:inline-flex;align-items:center;gap:8px;'>
                     <span style='position:relative;display:inline-block'>
                       <img src='${ava}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                     </span>
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
@@ -12899,43 +11245,10 @@ CHAT_HTML = """
                   <div id='admOnline' style='display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:8px;max-height:220px;overflow-y:auto'></div>
                 </div>
                 <div id='admEmergencyCard' style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);display:none'>
-                  <h4>Emergency Shutdown Control</h4>
-                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:8px;font-weight:600'></div>
-                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280;margin-bottom:12px'></div>
-                  
-                  <!-- Emergency Control Buttons -->
-                  <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>
-                    <button id='btnEmergencyActivate' type='button' class='btn btn-danger' style='background:#dc2626;color:white'>
-                      🚨 Activate Emergency
-                    </button>
-                    <button id='btnEmergencyDeactivate' type='button' class='btn btn-success' style='background:#16a34a;color:white'>
-                      ✅ Deactivate Emergency
-                    </button>
-                  </div>
-                  
-                  <!-- Recovery Stage Controls -->
-                  <div id='admEmergencyStages' style='display:none;border-top:1px solid var(--border);padding-top:12px'>
-                    <div style='font-size:13px;font-weight:600;margin-bottom:8px'>Recovery Stages:</div>
-                    <div style='display:flex;gap:6px;flex-wrap:wrap'>
-                      <button id='btnStage0' type='button' class='btn btn-sm' data-stage='0'>Stage 0: Full Shutdown</button>
-                      <button id='btnStage1' type='button' class='btn btn-sm' data-stage='1'>Stage 1: Read-Only</button>
-                      <button id='btnStage2' type='button' class='btn btn-sm' data-stage='2'>Stage 2: Chat-Only</button>
-                      <button id='btnStage3' type='button' class='btn btn-sm' data-stage='3'>Stage 3: Full Recovery</button>
-                    </div>
-                  </div>
-                  
-                  <!-- Emergency Logs -->
-                  <div style='border-top:1px solid var(--border);padding-top:12px;margin-top:12px'>
-                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
-                      <span style='font-size:13px;font-weight:600'>Emergency Logs:</span>
-                      <button id='btnRefreshEmergencyLogs' type='button' class='btn btn-sm btn-outline'>Refresh</button>
-                    </div>
-                    <div id='admEmergencyLogs' style='max-height:200px;overflow-y:auto;font-size:12px;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px'>
-                      <div style='color:#6b7280'>Click refresh to load emergency logs...</div>
-                    </div>
-                  </div>
+                  <h4>Emergency Status</h4>
+                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:4px'></div>
+                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280'></div>
                 </div>
-
                 <div style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)'>
                   <h4>Banned IPs</h4>
                   <div id='admBIPs' style='font-size:14px;margin-bottom:8px'></div>
@@ -13323,23 +11636,13 @@ CHAT_HTML = """
                 const cardEl = box.querySelector('#admEmergencyCard');
                 const emStatusEl = box.querySelector('#admEmergencyStatus');
                 const emSnapEl = box.querySelector('#admEmergencySnapshot');
-                const stagesEl = box.querySelector('#admEmergencyStages');
-                
                 if (!cardEl) { /* nothing to do */ }
                 else if (!(emOn || showBlock)) {
                   cardEl.style.display = 'none';
                 } else {
                   cardEl.style.display = '';
                   if (emStatusEl) {
-                    if (emOn) {
-                      emStatusEl.innerHTML = '🚨 <span style="color:#dc2626;font-weight:bold">Emergency shutdown: ACTIVE</span>';
-                      // Show recovery stage controls when emergency is active
-                      if (stagesEl) stagesEl.style.display = '';
-                    } else {
-                      emStatusEl.innerHTML = '✅ <span style="color:#16a34a">Emergency shutdown: inactive</span>';
-                      // Hide recovery stage controls when emergency is inactive
-                      if (stagesEl) stagesEl.style.display = 'none';
-                    }
+                    emStatusEl.textContent = emOn ? 'Emergency shutdown: ACTIVE' : 'Emergency shutdown: inactive';
                   }
                   if (emSnapEl) {
                     const snap = s.EMERGENCY_LAST_SNAPSHOT || '';
@@ -13732,120 +12035,7 @@ CHAT_HTML = """
               const data = await r.json(); if (!r.ok){ alert(data.error||'Failed'); return;}
               await refreshAll();
             };
-            };
             // User Management wiring
-            
-            // Emergency Control Handlers
-            try {
-              const btnEmergencyActivate = box.querySelector('#btnEmergencyActivate');
-              const btnEmergencyDeactivate = box.querySelector('#btnEmergencyDeactivate');
-              const btnRefreshEmergencyLogs = box.querySelector('#btnRefreshEmergencyLogs');
-              const admEmergencyLogs = box.querySelector('#admEmergencyLogs');
-              const admEmergencyStages = box.querySelector('#admEmergencyStages');
-              
-              if (btnEmergencyActivate) {
-                btnEmergencyActivate.onclick = async () => {
-                  if (!confirm('⚠️ CRITICAL: This will activate emergency shutdown mode and block all user operations. Continue?')) return;
-                  const trigger = prompt('Enter trigger reason (optional):') || 'Manual activation';
-                  try {
-                    const r = await fetch('/api/emergency/activate', {
-                      method: 'POST',
-                      headers: {'Content-Type': 'application/json'},
-                      body: JSON.stringify({ trigger })
-                    });
-                    const data = await r.json();
-                    if (!r.ok) { alert(data.error || 'Failed to activate emergency shutdown'); return; }
-                    alert('✅ Emergency shutdown activated successfully');
-                    await refreshAll();
-                  } catch (e) {
-                    alert('❌ Failed to activate emergency shutdown: ' + e.message);
-                  }
-                };
-              }
-              
-              if (btnEmergencyDeactivate) {
-                btnEmergencyDeactivate.onclick = async () => {
-                  if (!confirm('Deactivate emergency shutdown and return to normal operation?')) return;
-                  try {
-                    const r = await fetch('/api/emergency/deactivate', {
-                      method: 'POST',
-                      headers: {'Content-Type': 'application/json'},
-                      body: JSON.stringify({})
-                    });
-                    const data = await r.json();
-                    if (!r.ok) { alert(data.error || 'Failed to deactivate emergency shutdown'); return; }
-                    alert('✅ Emergency shutdown deactivated successfully');
-                    await refreshAll();
-                  } catch (e) {
-                    alert('❌ Failed to deactivate emergency shutdown: ' + e.message);
-                  }
-                };
-              }
-              
-              // Recovery stage buttons
-              const stageButtons = box.querySelectorAll('[data-stage]');
-              stageButtons.forEach(btn => {
-                btn.onclick = async () => {
-                  const stage = parseInt(btn.dataset.stage);
-                  const stageNames = ['Full Shutdown', 'Read-Only', 'Chat-Only', 'Full Recovery'];
-                  if (!confirm(`Set recovery stage to ${stage}: ${stageNames[stage]}?`)) return;
-                  try {
-                    const r = await fetch('/api/emergency/stage', {
-                      method: 'POST',
-                      headers: {'Content-Type': 'application/json'},
-                      body: JSON.stringify({ stage })
-                    });
-                    const data = await r.json();
-                    if (!r.ok) { alert(data.error || 'Failed to set recovery stage'); return; }
-                    alert(`✅ Recovery stage set to ${stage}: ${stageNames[stage]}`);
-                    await refreshAll();
-                  } catch (e) {
-                    alert('❌ Failed to set recovery stage: ' + e.message);
-                  }
-                };
-              });
-              
-              // Emergency logs refresh
-              if (btnRefreshEmergencyLogs && admEmergencyLogs) {
-                btnRefreshEmergencyLogs.onclick = async () => {
-                  try {
-                    const r = await fetch('/api/emergency/logs');
-                    const data = await r.json();
-                    if (!r.ok) { 
-                      admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + (data.error || 'Unknown error') + '</div>';
-                      return; 
-                    }
-                    
-                    if (!data.logs || data.logs.length === 0) {
-                      admEmergencyLogs.innerHTML = '<div style="color:#6b7280">No emergency logs found.</div>';
-                      return;
-                    }
-                    
-                    const logsHtml = data.logs.map(log => {
-                      const levelColor = {
-                        'CRITICAL': '#dc2626',
-                        'ERROR': '#ea580c', 
-                        'WARNING': '#d97706',
-                        'INFO': '#059669'
-                      }[log.level] || '#6b7280';
-                      
-                      return `<div style="margin-bottom:4px;padding:4px;border-left:3px solid ${levelColor};background:#f9fafb">
-                        <div style="font-weight:600;color:${levelColor}">[${log.level}] ${log.timestamp}</div>
-                        <div style="margin-top:2px">${log.message}</div>
-                        ${log.admin ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">Admin: ${log.admin}</div>` : ''}
-                      </div>`;
-                    }).join('');
-                    
-                    admEmergencyLogs.innerHTML = logsHtml;
-                  } catch (e) {
-                    admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + e.message + '</div>';
-                  }
-                };
-              }
-            } catch (e) {
-              console.error('Failed to setup emergency controls:', e);
-            }
-
             const umSearch = box.querySelector('#umSearch');
             const umResults = box.querySelector('#umResults');
             const umUser = box.querySelector('#umUser');
@@ -14279,45 +12469,8 @@ def inject():
 
 # Run the application
 if __name__ == "__main__":
-    try:
-        with app.app_context():
-            init_db()
-            recover_failed_username_changes()  # Recover from any failed username changes
-            load_banned_ips()
-        
-        # Add global exception handler for critical errors
-        def handle_critical_exception(exc_type, exc_value, exc_traceback):
-            try:
-                emergency_shutdown_activate(
-                    trigger="SYSTEM_CRITICAL_ERROR",
-                    admin="SYSTEM",
-                    auto_backup=True,
-                    db_path=DB_PATH,
-                    get_db_func=get_db,
-                    get_setting_func=get_setting,
-                    set_setting_func=set_setting,
-                    connected_sockets=connected_sockets,
-                    spam_strikes=spam_strikes
-                )
-            except Exception:
-                pass
-            # Re-raise the original exception
-            raise exc_value
-        
-        import sys
-        sys.excepthook = handle_critical_exception
-        
-        socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)
-    except KeyboardInterrupt:
-        print("\nShutdown requested by user")
-    except Exception as e:
-        print(f"Critical error: {e}")
-        try:
-            emergency_shutdown_activate(
-                trigger="SYSTEM_STARTUP_ERROR",
-                admin="SYSTEM",
-                auto_backup=True
-            )
-        except Exception:
-            pass
-        raise
+    with app.app_context():
+        init_db()
+        recover_failed_username_changes()  # Recover from any failed username changes
+        load_banned_ips()
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)

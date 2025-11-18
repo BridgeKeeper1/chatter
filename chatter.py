@@ -2128,314 +2128,379 @@ connected_sockets = {}  # Track connected sockets for better message delivery
 typing_users = {}  # username -> expiry timestamp
 voice_channels = defaultdict(set)  # channel -> set(usernames)
 
-# Simple anti-spam tracking (timestamps in seconds)
+# Comprehensive Anti-Spam System with All 7 Requested Features
+import time
+import hashlib
+import re
+import difflib
+import zlib
+from collections import defaultdict
+
+# Anti-spam state tracking
 spam_public = defaultdict(list)  # username -> [ts,...]
 spam_dm = defaultdict(list)      # username -> [ts,...]
 spam_gdm = defaultdict(list)     # username -> [ts,...]
 
-# Extended anti-spam state for content-based checks and progressive sanctions
-spam_recent_public = defaultdict(list)  # username -> [(ts, norm_text)]
-spam_recent_dm = defaultdict(list)
-spam_recent_gdm = defaultdict(list)
-spam_strikes = defaultdict(lambda: {'count': 0.0, 'ts': 0.0})  # username -> {count, ts}
+# Message content tracking for duplicate detection
+spam_message_hashes = defaultdict(list)  # username -> [(hash, timestamp), ...]
+spam_recent_messages = defaultdict(list)  # username -> [(text, timestamp), ...]
+
+# Progressive sanction system
+spam_strikes = defaultdict(lambda: {'count': 0, 'violations': [], 'last_violation': 0})
 spam_slow_until = defaultdict(float)   # username -> unix timestamp until slow-mode expires
 spam_block_until = defaultdict(float)  # username -> unix timestamp until hard block expires
 
-def _spam_auto_split_message(text: str, max_chars: int = 500) -> list[str]:
-    """Auto-split large messages into smaller chunks."""
-    if not text or len(text) <= max_chars:
-        return [text] if text else []
+# Auto-split queue with rate limiting
+spam_split_queue = defaultdict(list)  # username -> [(scheduled_time, chunk), ...]
+
+def _spam_message_length_check(text: str, max_chars: int = 1000) -> tuple[bool, str]:
+    """1. Message Length Limit - Check if message exceeds character limit."""
+    if not text:
+        return True, ""
     
+    if len(text) > max_chars:
+        return False, f"Message too long ({len(text)} chars). Maximum allowed: {max_chars} characters. Please shorten your message."
+    
+    return True, ""
+
+def _spam_create_message_hash(text: str) -> str:
+    """Create a hash fingerprint of message content for duplicate detection."""
+    # Normalize text: lowercase, remove extra whitespace, strip punctuation
+    normalized = re.sub(r'[^\w\s]', '', text.lower())
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    
+    # Create hash
+    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) -> tuple[bool, str]:
+    """2. Duplicate & Near-Duplicate Detection - Check for repeated content."""
+    if not text.strip():
+        return True, ""
+    
+    now = time.time()
+    message_hash = _spam_create_message_hash(text)
+    
+    # Clean old hashes
+    user_hashes = spam_message_hashes[username]
+    spam_message_hashes[username] = [(h, ts) for h, ts in user_hashes if now - ts < timeframe]
+    
+    # Check for exact duplicate
+    for stored_hash, timestamp in spam_message_hashes[username]:
+        if stored_hash == message_hash and now - timestamp < timeframe:
+            return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
+    
+    # Check for near-duplicates using fuzzy matching
+    user_messages = spam_recent_messages[username]
+    spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
+    
+    for stored_msg, timestamp in spam_recent_messages[username]:
+        if now - timestamp < timeframe:
+            similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
+            if similarity > 0.85:  # 85% similarity threshold
+                return False, f"Very similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
+    
+    # Store this message
+    spam_message_hashes[username].append((message_hash, now))
+    spam_recent_messages[username].append((text, now))
+    
+    return True, ""
+
+def _spam_payload_size_check(text: str, max_bytes: int = 8192) -> tuple[bool, str]:
+    """3. Payload Size Monitoring - Check message byte size."""
+    if not text:
+        return True, ""
+    
+    # Check raw byte size
+    byte_size = len(text.encode('utf-8'))
+    if byte_size > max_bytes:
+        return False, f"Message payload too large ({byte_size} bytes). Maximum allowed: {max_bytes} bytes."
+    
+    # Check compressed size to detect encoded spam
+    try:
+        compressed_size = len(zlib.compress(text.encode('utf-8')))
+        compression_ratio = compressed_size / byte_size if byte_size > 0 else 1
+        
+        # If compression ratio is very low, it might be repetitive spam
+        if compression_ratio < 0.1 and byte_size > 1000:
+            return False, "Message appears to contain repetitive content. Please vary your message content."
+    except Exception:
+        pass
+    
+    return True, ""
+
+def _spam_auto_split_with_rate_limit(username: str, text: str, max_chars: int = 500) -> tuple[bool, list[str], str]:
+    """4. Auto-Split with Rate Limiting - Split large messages and apply rate limiting."""
+    if not text or len(text) <= max_chars:
+        return True, [text] if text else [], ""
+    
+    # Split message into chunks
     chunks = []
+    
     # Try to split by paragraphs first
     paragraphs = text.split('\n\n')
     current_chunk = ""
     
-    for para in paragraphs:
-        if len(current_chunk + para) <= max_chars:
-            current_chunk += para + '\n\n'
+    for paragraph in paragraphs:
+        if len(current_chunk) + len(paragraph) + 2 <= max_chars:
+            if current_chunk:
+                current_chunk += '\n\n' + paragraph
+            else:
+                current_chunk = paragraph
         else:
             if current_chunk:
-                chunks.append(current_chunk.rstrip())
-                current_chunk = ""
-            
-            # If single paragraph is too long, split by sentences
-            if len(para) > max_chars:
-                sentences = para.split('. ')
-                for i, sentence in enumerate(sentences):
-                    if i < len(sentences) - 1:
-                        sentence += '. '
-                    
-                    if len(current_chunk + sentence) <= max_chars:
-                        current_chunk += sentence
-                    else:
-                        if current_chunk:
-                            chunks.append(current_chunk.rstrip())
-                        current_chunk = sentence
+                chunks.append(current_chunk)
+                current_chunk = paragraph
             else:
-                current_chunk = para + '\n\n'
+                # Paragraph is too long, split by sentences
+                sentences = re.split(r'[.!?]+', paragraph)
+                temp_chunk = ""
+                for sentence in sentences:
+                    if sentence.strip():
+                        sentence = sentence.strip() + '.'
+                        if len(temp_chunk) + len(sentence) + 1 <= max_chars:
+                            if temp_chunk:
+                                temp_chunk += ' ' + sentence
+                            else:
+                                temp_chunk = sentence
+                        else:
+                            if temp_chunk:
+                                chunks.append(temp_chunk)
+                            temp_chunk = sentence
+                if temp_chunk:
+                    current_chunk = temp_chunk
     
     if current_chunk:
-        chunks.append(current_chunk.rstrip())
+        chunks.append(current_chunk)
     
-    return chunks
+    # If still too long, split by words
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_chars:
+            final_chunks.append(chunk)
+        else:
+            words = chunk.split()
+            temp_chunk = ""
+            for word in words:
+                if len(temp_chunk) + len(word) + 1 <= max_chars:
+                    if temp_chunk:
+                        temp_chunk += ' ' + word
+                    else:
+                        temp_chunk = word
+                else:
+                    if temp_chunk:
+                        final_chunks.append(temp_chunk)
+                    temp_chunk = word
+            if temp_chunk:
+                final_chunks.append(temp_chunk)
+    
+    # Apply rate limiting - 1 message per second for split parts
+    now = time.time()
+    scheduled_chunks = []
+    
+    for i, chunk in enumerate(final_chunks):
+        scheduled_time = now + i  # 1 second delay between chunks
+        spam_split_queue[username].append((scheduled_time, chunk))
+        scheduled_chunks.append(chunk)
+    
+    return False, scheduled_chunks, f"Large message auto-split into {len(final_chunks)} parts. Parts will be sent at 1-second intervals to prevent flooding."
 
-# Auto-split tracking for rate limiting
-spam_split_queue = defaultdict(list)  # username -> [(ts, chunk), ...]
-
-def _spam_record_strike(user: str, severity: float = 1.0) -> None:
-    """Record a spam strike and apply progressive sanctions."""
-    try:
-        if not user:
-            return
-        now = time.time()
-        
-        # Get settings with fallbacks
-        try:
-            slow_seconds = float(get_setting('SPAM_SLOW_SECONDS','10') or 10.0)
-        except Exception:
-            slow_seconds = 10.0
-        if slow_seconds < 1.0:
-            slow_seconds = 1.0
-        elif slow_seconds > 120.0:
-            slow_seconds = 120.0
-        
-        block_short = max(30.0, slow_seconds * 6.0)
-        block_long = max(60.0, slow_seconds * 30.0)
-        
-        st = spam_strikes[user]
-        last_ts = float(st.get('ts') or 0.0)
-        
-        # Decay old strikes after ~5 minutes
-        if last_ts and (now - last_ts) > 300.0:
-            st['count'] = 0.0
-        
-        st['count'] = float(st.get('count') or 0.0) + float(severity)
-        st['ts'] = now
-        c = float(st.get('count') or 0.0)
-        
-        # Progressive escalation: strikes drive slow-mode and temporary blocks
-        if c >= 4.0:
-            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_long)
-        elif c >= 3.0:
-            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_short)
-        elif c >= 2.0:
-            spam_slow_until[user] = max(float(spam_slow_until.get(user) or 0.0), now + slow_seconds)
-    except Exception:
-        pass
-
-def _spam_enhanced_content_analysis(text: str) -> tuple[bool, str]:
-    """Enhanced content pattern analysis."""
-    if not text:
-        return True, ""
+def _spam_individual_slow_mode_check(username: str) -> tuple[bool, str]:
+    """5. Individual Slow Mode - Check if user is in slow mode."""
+    now = time.time()
     
-    lower = text.lower()
-    
-    # HTML/CSS/JS dump detection
-    try:
-        tag_hits = sum(lower.count(tag) for tag in ('<div', '<script', '<style', '<html', '<body', '<span', '<p>'))
-        css_hits = sum(lower.count(prop) for prop in ('margin:', 'padding:', 'background:', 'color:', 'font-'))
-        js_hits = sum(lower.count(keyword) for keyword in ('function(', 'var ', 'let ', 'const ', '=>'))
-    except Exception:
-        tag_hits = css_hits = js_hits = 0
-    
-    br_hits = lower.count('<br') if '<' in lower else 0
-    newline_hits = text.count('\n')
-    
-    # Excessive whitespace detection
-    whitespace_ratio = (text.count(' ') + text.count('\t') + text.count('\n')) / max(len(text), 1)
-    
-    # Repeated character patterns
-    repeated_chars = len(re.findall(r'(.)\1{10,}', text))  # 10+ repeated chars
-    
-    if tag_hits >= 10 or br_hits >= 20 or newline_hits >= 80:
-        return False, "Large HTML/code dumps are not allowed. Please send files or smaller snippets."
-    
-    if css_hits >= 5 or js_hits >= 5:
-        return False, "Large CSS/JavaScript code blocks should be sent as files."
-    
-    if whitespace_ratio > 0.7 and len(text) > 100:
-        return False, "Messages with excessive whitespace are not allowed."
-    
-    if repeated_chars >= 3:
-        return False, "Messages with excessive repeated characters are not allowed."
+    if username in spam_slow_until and now < spam_slow_until[username]:
+        remaining = int(spam_slow_until[username] - now)
+        return False, f"You are in slow mode. Please wait {remaining} seconds before sending another message."
     
     return True, ""
 
-def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment: bool = False):
-    """
-    Comprehensive spam gate with all requested features:
-    1. Message Length Limit
-    2. Duplicate & Near-Duplicate Detection  
-    3. Payload Size Monitoring
-    4. Auto-Split with Rate Limiting
-    5. Individual Slow Mode
-    6. Content Pattern Analysis
-    7. Progressive Sanction System
-    """
-    try:
-        if not username:
-            return True, None, []
-        
-        # Superadmins bypass spam gates to avoid accidental lockouts
-        try:
-            if username in SUPERADMINS:
-                return True, None, []
-        except Exception:
-            pass
+def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
+    """6. Content Pattern Analysis - Detect suspicious patterns."""
+    if not text:
+        return True, ""
+    
+    # Check for excessive whitespace
+    whitespace_ratio = len(re.findall(r'\s', text)) / len(text) if text else 0
+    if whitespace_ratio > 0.7:
+        return False, "Message contains excessive whitespace. Please use normal formatting."
+    
+    # Check for repeated characters
+    repeated_chars = re.findall(r'(.)\1{10,}', text)  # 10+ repeated characters
+    if repeated_chars:
+        return False, "Message contains excessive repeated characters. Please use normal text."
+    
+    # Check for HTML/CSS patterns
+    html_patterns = [
+        r'<div[^>]*>',
+        r'<script[^>]*>',
+        r'<style[^>]*>',
+        r'<br\s*/?>',
+        r'&[a-zA-Z]+;',
+        r'style\s*=\s*["\'][^"\']*["\']'
+    ]
+    
+    html_matches = 0
+    for pattern in html_patterns:
+        html_matches += len(re.findall(pattern, text, re.IGNORECASE))
+    
+    if html_matches > 5:
+        return False, "Message appears to contain HTML/CSS code dumps. Please use plain text for chat."
+    
+    # Check for excessive line breaks
+    line_breaks = text.count('\n')
+    if line_breaks > 20:
+        return False, "Message contains too many line breaks. Please format your message more concisely."
+    
+    # Check for code block patterns
+    code_patterns = [
+        r'```[\s\S]*```',
+        r'`[^`\n]{50,}`',
+        r'^\s*[\w\-]+\s*:\s*[\w\-]+\s*;?\s*$'  # CSS-like patterns
+    ]
+    
+    code_matches = 0
+    for pattern in code_patterns:
+        code_matches += len(re.findall(pattern, text, re.MULTILINE))
+    
+    if code_matches > 10:
+        return False, "Message appears to contain large code blocks. Please use a code sharing service for large code snippets."
+    
+    return True, ""
 
-        now = time.time()
+def _spam_record_violation(username: str, violation_type: str, severity: int = 1):
+    """Record a spam violation for progressive sanctions."""
+    now = time.time()
+    user_strikes = spam_strikes[username]
+    
+    user_strikes['count'] += severity
+    user_strikes['last_violation'] = now
+    user_strikes['violations'].append({
+        'type': violation_type,
+        'timestamp': now,
+        'severity': severity
+    })
+    
+    # Clean old violations (older than 1 hour)
+    user_strikes['violations'] = [
+        v for v in user_strikes['violations'] 
+        if now - v['timestamp'] < 3600
+    ]
+    
+    # Recalculate strike count based on recent violations
+    user_strikes['count'] = sum(v['severity'] for v in user_strikes['violations'])
 
-        # Load configurable thresholds with safe fallbacks
-        try:
-            max_chars = int(get_setting('SPAM_MAX_CHARS', '1000') or 1000)
-        except Exception:
-            max_chars = 1000
-        try:
-            max_bytes = int(get_setting('SPAM_MAX_BYTES', '4000') or 4000)
-        except Exception:
-            max_bytes = 4000
-        try:
-            rate_window = float(get_setting('SPAM_WINDOW_SECONDS', '10') or 10.0)
-        except Exception:
-            rate_window = 10.0
-        try:
-            min_gap = float(get_setting('SPAM_MIN_GAP_SECONDS', '0.7') or 0.7)
-        except Exception:
-            min_gap = 0.7
-        try:
-            max_per_window = int(get_setting('SPAM_MAX_PER_WINDOW', '8') or 8)
-        except Exception:
-            max_per_window = 8
-        try:
-            sensitivity = float(get_setting('SPAM_SENSITIVITY', '1.0') or 1.0)
-        except Exception:
-            sensitivity = 1.0
-        if sensitivity < 0.25:
-            sensitivity = 0.25
-        elif sensitivity > 3.0:
-            sensitivity = 3.0
-        
-        try:
-            auto_split_threshold = int(get_setting('SPAM_AUTO_SPLIT_THRESHOLD', '800') or 800)
-        except Exception:
-            auto_split_threshold = 800
-
-        # Hard block gate (user fully blocked for a short period)
-        try:
-            block_until = float(spam_block_until.get(username) or 0.0)
-        except Exception:
-            block_until = 0.0
-        if block_until:
-            if now < block_until:
-                return False, "You are temporarily blocked from sending messages due to spam-like activity.", []
-            # Expired
-            spam_block_until.pop(username, None)
-
-        # Slow mode gate (per-user, any channel)
-        try:
-            slow_until = float(spam_slow_until.get(username) or 0.0)
-        except Exception:
-            slow_until = 0.0
-        if slow_until and now < slow_until:
-            return False, "Slow mode is enabled for you. Please wait a few seconds before sending another message.", []
-        if slow_until and now >= slow_until:
-            spam_slow_until.pop(username, None)
-
-        # Choose per-channel history and recent text buffers
-        if kind == 'dm':
-            hist = spam_dm[username]
-            recent = spam_recent_dm[username]
-        elif kind == 'gdm':
-            hist = spam_gdm[username]
-            recent = spam_recent_gdm[username]
-        else:
-            hist = spam_public[username]
-            recent = spam_recent_public[username]
-
-        # Auto-split large messages
-        raw = (text or '').strip()
-        message_chunks = []
-        
-        if raw and len(raw) > auto_split_threshold:
-            # Check if message should be auto-split
-            if len(raw) <= max_chars * 3:  # Only auto-split reasonably sized messages
-                chunks = _spam_auto_split_message(raw, auto_split_threshold)
-                if len(chunks) > 1:
-                    message_chunks = chunks
-                    # For auto-split, we'll process the first chunk normally and queue the rest
-                    raw = chunks[0]
-                    
-                    # Queue remaining chunks with rate limiting
-                    split_queue = spam_split_queue[username]
-                    split_queue.clear()  # Clear old queue
-                    for i, chunk in enumerate(chunks[1:], 1):
-                        split_queue.append((now + i * 1.0, chunk))  # 1 second between chunks
-
-        # Baseline rate limit: ~1 msg / min_gap, max ~max_per_window msgs / rate_window
-        window = rate_window
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and ((now - hist[-1]) < min_gap or len(hist) >= max_per_window):
-            base_sev = 1.5 if len(hist) >= max_per_window else 1.0
-            _spam_record_strike(username, severity=base_sev * sensitivity)
-            return False, "You are sending messages too quickly; please slow down.", []
-        hist.append(now)
-
-        if raw:
-            # Message length / payload size limits (server-side backstop)
-            try:
-                if len(raw) > max_chars or len(raw.encode('utf-8')) > max_bytes:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it.", []
-            except Exception:
-                if len(raw) > max_chars:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it.", []
-
-            # Compression-based payload check: catch large encoded/base64-style blobs
-            try:
-                if len(raw) > 200:
-                    raw_bytes = raw.encode('utf-8', errors='ignore')
-                    comp = zlib.compress(raw_bytes, level=3)
-                    if len(comp) > max_bytes:
-                        _spam_record_strike(username, severity=1.0 * sensitivity)
-                        return False, "This message looks like a large encoded payload. Please send it as a file instead of pasting it.", []
-            except Exception:
-                pass
-
-            # Enhanced content pattern analysis
-            content_ok, content_msg = _spam_enhanced_content_analysis(raw)
-            if not content_ok:
-                _spam_record_strike(username, severity=1.0 * sensitivity)
-                return False, content_msg, []
-
-            # Duplicate / near-duplicate detection in the last 60 seconds
-            recent_window = 60.0
-            recent[:] = [(ts, txt) for (ts, txt) in recent if now - ts <= recent_window]
-            norm = ' '.join(raw.split())  # collapse whitespace
-            for ts, prev in recent:
-                if not prev:
-                    continue
-                if norm == prev:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "Duplicate message detected. Please avoid sending the same content repeatedly.", []
-                try:
-                    if len(norm) >= 40 and len(prev) >= 40:
-                        ratio = difflib.SequenceMatcher(None, norm, prev).ratio()
-                        if ratio > 0.97:
-                            _spam_record_strike(username, severity=0.7 * sensitivity)
-                            return False, "Very similar message detected. Please avoid minor variations of the same content.", []
-                except Exception:
-                    pass
-            recent.append((now, norm))
-
-        # Return success with any auto-split chunks
-        return True, None, message_chunks
-    except Exception:
-        # Fail open on unexpected errors to avoid breaking chat
-        return True, None, []
+def _spam_progressive_sanctions(username: str) -> tuple[bool, str]:
+    """7. Progressive Sanction System - Apply escalating punishments."""
+    user_strikes = spam_strikes[username]
+    strike_count = user_strikes['count']
+    now = time.time()
+    
+    if strike_count == 0:
+        return True, ""
+    
+    # First violation (1-2 strikes) - Warning
+    if strike_count <= 2:
+        return False, "⚠️ Warning: Please follow chat guidelines. Continued violations may result in restrictions."
+    
+    # Second violation (3-4 strikes) - Temporary slow mode (30 seconds)
+    elif strike_count <= 4:
+        spam_slow_until[username] = now + 30
+        return False, "🐌 Slow mode applied (30 seconds). Please wait before sending another message."
+    
+    # Third violation (5+ strikes) - Extended slow mode (2 minutes)
+    elif strike_count >= 5:
+        spam_slow_until[username] = now + 120
+        return False, "🚫 Extended slow mode applied (2 minutes). Multiple violations detected. Please review chat guidelines."
+    
+    return True, ""
 
 def _spam_process_split_queue(username: str):
+    """Process queued auto-split message chunks."""
+    try:
+        now = time.time()
+        split_queue = spam_split_queue[username]
+        
+        # Process ready chunks
+        ready_chunks = []
+        remaining_chunks = []
+        
+        for scheduled_time, chunk in split_queue:
+            if now >= scheduled_time:
+                ready_chunks.append(chunk)
+            else:
+                remaining_chunks.append((scheduled_time, chunk))
+        
+        # Update queue
+        split_queue[:] = remaining_chunks
+        
+        return ready_chunks
+                
+    except Exception:
+        return []
+
+def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachment: bool = False, get_setting_func=None):
+    """
+    Comprehensive anti-spam gate with all 7 features.
+    
+    Returns:
+        (allowed: bool, reason: str, auto_split_chunks: list[str] or None)
+    """
+    try:
+        if not username or not text:
+            return True, "", None
+        
+        # Get settings with defaults
+        max_chars = int(get_setting_func('SPAM_MAX_CHARS', '1000')) if get_setting_func else 1000
+        max_bytes = int(get_setting_func('SPAM_MAX_BYTES', '8192')) if get_setting_func else 8192
+        
+        # 5. Individual Slow Mode Check (first, as it's time-based)
+        allowed, reason = _spam_individual_slow_mode_check(username)
+        if not allowed:
+            return False, reason, None
+        
+        # 1. Message Length Limit
+        allowed, reason = _spam_message_length_check(text, max_chars)
+        if not allowed:
+            _spam_record_violation(username, "message_too_long", 1)
+            # Check if we should auto-split instead
+            if len(text) <= max_chars * 3:  # Only auto-split if not excessively long
+                allowed, chunks, split_reason = _spam_auto_split_with_rate_limit(username, text, max_chars // 2)
+                if not allowed:  # Auto-split was applied
+                    return False, split_reason, chunks
+            else:
+                return False, reason, None
+        
+        # 2. Duplicate & Near-Duplicate Detection
+        allowed, reason = _spam_duplicate_detection(username, text)
+        if not allowed:
+            _spam_record_violation(username, "duplicate_content", 2)
+            return False, reason, None
+        
+        # 3. Payload Size Monitoring
+        allowed, reason = _spam_payload_size_check(text, max_bytes)
+        if not allowed:
+            _spam_record_violation(username, "payload_too_large", 2)
+            return False, reason, None
+        
+        # 6. Content Pattern Analysis
+        allowed, reason = _spam_content_pattern_analysis(text)
+        if not allowed:
+            _spam_record_violation(username, "suspicious_patterns", 1)
+            return False, reason, None
+        
+        # 7. Progressive Sanction System
+        allowed, reason = _spam_progressive_sanctions(username)
+        if not allowed:
+            return False, reason, None
+        
+        # All checks passed
+        return True, "", None
+        
+    except Exception as e:
+        # Fail safe: allow message but log error
+        print(f"Anti-spam error: {e}")
+        return True, "", None
+
     """Process queued auto-split message chunks."""
     try:
         now = time.time()
@@ -7535,7 +7600,7 @@ def on_gdm_send_v1(data):
     # Comprehensive anti-spam checking
     text = (data or {}).get("text", "").strip()
     has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("gdm", me, text, has_attachment=has_attachment)
+    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("gdm", me, text, has_attachment=has_attachment, get_setting_func=get_setting)
     if not spam_ok:
         try:
             emit("system_message", spam_msg, room=f"user:{me}")
@@ -7890,7 +7955,7 @@ def on_send_message(data):
     # Comprehensive anti-spam checking
     text = (data or {}).get("text", "").strip()
     has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("public", username, text, has_attachment=has_attachment)
+    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("public", username, text, has_attachment=has_attachment, get_setting_func=get_setting)
     if not spam_ok:
         try:
             emit("system_message", spam_msg, room=f"user:{username}")
@@ -8538,7 +8603,7 @@ def on_dm_send(data):
     # Comprehensive anti-spam checking
     text = (data or {}).get("text", "").strip()
     has_attachment = bool((data or {}).get("filename"))
-    spam_ok, spam_msg, split_chunks = _spam_gate_and_update("dm", username, text, has_attachment=has_attachment)
+    spam_ok, spam_msg, split_chunks = _spam_comprehensive_gate("dm", username, text, has_attachment=has_attachment, get_setting_func=get_setting)
     if not spam_ok:
         try:
             emit("system_message", spam_msg, room=f"user:{username}")
@@ -9103,136 +9168,316 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Enhanced Mobile & Tablet Responsive Design */
+      /* Full-Screen Responsive Design - Always show all elements */
       
-      /* Small phones (up to 480px) */
+      /* Small phones (up to 480px) - Full screen with scaled elements */
       @media (max-width: 480px) {
-        .app { flex-direction: column; gap: 4px !important; }
-        #leftbar, #rightbar { display:none; }
-        body.show-leftbar #leftbar,
-        body.show-rightbar #rightbar { 
-          display:block; position:fixed; top:0; bottom:56px; left:0; right:0; 
-          width:auto; max-width:none; padding:8px; background:var(--bg); 
-          z-index:9997; overflow:auto; border:none; 
-        }
-        #main { order: 2; padding: 4px; }
-        #mobileNav { 
-          display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; 
-          background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; 
-        }
-        #mobileNav button { 
-          flex:1; background:transparent; color:#fff; border:none; font-size:12px; 
-          display:flex; flex-direction:column; align-items:center; justify-content:center; 
-          gap:2px; min-height:44px; padding:4px 2px;
-        }
-        #mobileBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9996; }
-        body.show-leftbar #mobileBackdrop,
-        body.show-rightbar #mobileBackdrop { display:block; }
-        header { position:sticky; top:0; background:var(--bg); z-index:5; padding:4px 8px; }
-        .chat { min-height: calc(100vh - 56px - 140px); padding: 4px; }
-        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:8px 4px; }
-        #textInput { font-size:16px; padding:12px 8px; min-height:44px; border-radius:8px; }
-        #sendForm button { padding:12px 16px; min-height:44px; border-radius:8px; font-size:14px; }
-        #fileInput { font-size:14px; padding:8px; }
-        #onlineBtn { padding:8px 12px; min-height:44px; font-size:14px; }
-        body { padding-bottom: 56px; font-size: 14px; }
-        
-        /* Better button spacing for touch */
-        button, input[type="button"], input[type="submit"] {
-          min-height: 44px;
-          min-width: 44px;
-          padding: 8px 12px;
-          margin: 2px;
+        .app { 
+          display: flex !important; 
+          flex-direction: row !important; 
+          gap: 2px !important; 
+          height: 100vh; 
+          overflow: hidden;
         }
         
-        /* Improved text readability */
-        .message { font-size: 14px; line-height: 1.4; padding: 8px; }
-        .username { font-size: 13px; font-weight: 600; }
+        /* Scale sidebars to fit */
+        #leftbar { 
+          width: 25% !important; 
+          min-width: 80px !important; 
+          max-width: 120px !important;
+          padding: 4px !important;
+          overflow-y: auto;
+          font-size: 11px;
+        }
+        #rightbar { 
+          width: 20% !important; 
+          min-width: 60px !important; 
+          max-width: 100px !important;
+          padding: 4px !important;
+          overflow-y: auto;
+          font-size: 11px;
+        }
         
-        /* Better sidebar on small screens */
-        #leftbar { padding: 8px; }
-        #leftbar button { font-size: 12px; padding: 6px 8px; }
-      }
-      
-      /* Regular phones and small tablets (481px to 768px) */
-      @media (min-width: 481px) and (max-width: 768px) {
-        .app { flex-direction: column; gap: 6px !important; }
-        #leftbar, #rightbar { display:none; }
-        body.show-leftbar #leftbar,
-        body.show-rightbar #rightbar { 
-          display:block; position:fixed; top:0; bottom:56px; left:0; right:0; 
-          width:auto; max-width:none; padding:12px; background:var(--bg); 
-          z-index:9997; overflow:auto; border:none; 
+        /* Main chat area takes remaining space */
+        #main { 
+          flex: 1 !important; 
+          min-width: 0 !important;
+          padding: 2px !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
         }
-        #main { order: 2; padding: 8px; }
-        #mobileNav { 
-          display:flex; position:fixed; left:0; right:0; bottom:0; height:56px; 
-          background:#111827; color:#fff; z-index:9999; border-top:1px solid #222; 
-        }
-        #mobileNav button { 
-          flex:1; background:transparent; color:#fff; border:none; font-size:14px; 
-          display:flex; flex-direction:column; align-items:center; justify-content:center; 
-          gap:4px; min-height:44px;
-        }
-        #mobileBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9996; }
-        body.show-leftbar #mobileBackdrop,
-        body.show-rightbar #mobileBackdrop { display:block; }
-        header { position:sticky; top:0; background:var(--bg); z-index:5; padding:6px 12px; }
-        .chat { min-height: calc(100vh - 56px - 160px); padding: 8px; }
-        .form-row { position:sticky; bottom:56px; background:var(--bg); padding:8px; }
-        #textInput { font-size:16px; padding:12px; min-height:44px; }
-        #sendForm button { padding:12px 16px; min-height:44px; }
-        #fileInput { font-size:14px; }
-        #onlineBtn { padding:8px 12px; }
-        body { padding-bottom: 56px; }
         
-        /* Touch-friendly buttons */
-        button, input[type="button"], input[type="submit"] {
-          min-height: 44px;
-          padding: 8px 16px;
+        /* Chat area with proper scrolling */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 4px !important;
+          font-size: 13px;
+          line-height: 1.3;
         }
-      }
-      
-      /* Tablets and small laptops (769px to 1024px) */
-      @media (min-width: 769px) and (max-width: 1024px) {
-        .app { gap: 12px !important; }
-        #leftbar { width: 200px; min-width: 200px; }
-        #rightbar { width: 200px; min-width: 200px; }
-        #main { flex: 1; padding: 8px; }
-        .chat { padding: 8px; }
-        #textInput { font-size: 15px; }
         
-        /* Hide mobile nav on tablets */
+        /* Compact form at bottom */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 4px !important;
+          background: var(--bg);
+        }
+        
+        /* Smaller text input but still usable */
+        #textInput { 
+          font-size: 14px !important; 
+          padding: 8px 6px !important; 
+          min-height: 36px !important;
+          border-radius: 6px;
+        }
+        
+        /* Compact buttons */
+        #sendForm button { 
+          padding: 8px 10px !important; 
+          min-height: 36px !important; 
+          font-size: 12px !important;
+        }
+        
+        /* Smaller sidebar buttons */
+        #leftbar button, #rightbar button { 
+          font-size: 10px !important; 
+          padding: 4px 6px !important;
+          min-height: 32px !important;
+        }
+        
+        /* Compact messages */
+        .message { 
+          font-size: 12px !important; 
+          line-height: 1.3 !important; 
+          padding: 4px !important;
+          margin: 2px 0 !important;
+        }
+        .username { 
+          font-size: 11px !important; 
+          font-weight: 600;
+        }
+        
+        /* Hide mobile nav - not needed in full screen */
         #mobileNav { display: none !important; }
-        body { padding-bottom: 0; }
+        body { padding-bottom: 0 !important; }
       }
       
-      /* Large tablets and laptops (1025px to 1440px) */
+      /* Regular phones and small tablets (481px to 768px) - Full screen with better proportions */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .app { 
+          display: flex !important; 
+          flex-direction: row !important; 
+          gap: 4px !important; 
+          height: 100vh; 
+          overflow: hidden;
+        }
+        
+        /* Better proportioned sidebars */
+        #leftbar { 
+          width: 30% !important; 
+          min-width: 120px !important; 
+          max-width: 180px !important;
+          padding: 6px !important;
+          overflow-y: auto;
+          font-size: 12px;
+        }
+        #rightbar { 
+          width: 25% !important; 
+          min-width: 100px !important; 
+          max-width: 150px !important;
+          padding: 6px !important;
+          overflow-y: auto;
+          font-size: 12px;
+        }
+        
+        /* Main chat area */
+        #main { 
+          flex: 1 !important; 
+          min-width: 0 !important;
+          padding: 4px !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 6px !important;
+          font-size: 14px;
+        }
+        
+        .form-row { 
+          flex-shrink: 0;
+          padding: 6px !important;
+        }
+        
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 10px !important; 
+          min-height: 40px !important;
+        }
+        
+        #sendForm button { 
+          padding: 10px 14px !important; 
+          min-height: 40px !important;
+        }
+        
+        /* Sidebar buttons */
+        #leftbar button, #rightbar button { 
+          font-size: 11px !important; 
+          padding: 6px 8px !important;
+          min-height: 36px !important;
+        }
+        
+        /* Hide mobile nav */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0 !important; }
+      }
+      
+      /* Tablets and small laptops (769px to 1024px) - Standard full screen */
+      @media (min-width: 769px) and (max-width: 1024px) {
+        .app { 
+          gap: 8px !important; 
+          height: 100vh;
+          overflow: hidden;
+        }
+        #leftbar { 
+          width: 200px !important; 
+          min-width: 200px !important;
+          overflow-y: auto;
+        }
+        #rightbar { 
+          width: 180px !important; 
+          min-width: 180px !important;
+          overflow-y: auto;
+        }
+        #main { 
+          flex: 1; 
+          padding: 6px !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 8px !important;
+        }
+        .form-row { flex-shrink: 0; }
+        #textInput { font-size: 15px !important; }
+        
+        /* No mobile nav on tablets */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0 !important; }
+      }
+      
+      /* Large tablets and laptops (1025px to 1440px) - Optimal full screen */
       @media (min-width: 1025px) and (max-width: 1440px) {
-        .app { gap: 16px !important; max-width: 1200px; margin: 0 auto; }
-        #leftbar { width: 240px; min-width: 240px; }
-        #rightbar { width: 240px; min-width: 240px; }
-        #main { flex: 1; padding: 12px; }
-        .chat { padding: 12px; }
+        .app { 
+          gap: 12px !important; 
+          max-width: none !important;
+          height: 100vh;
+          overflow: hidden;
+        }
+        #leftbar { 
+          width: 240px !important; 
+          min-width: 240px !important;
+          overflow-y: auto;
+        }
+        #rightbar { 
+          width: 220px !important; 
+          min-width: 220px !important;
+          overflow-y: auto;
+        }
+        #main { 
+          flex: 1; 
+          padding: 10px !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 12px !important;
+        }
+        .form-row { flex-shrink: 0; }
       }
       
-      /* Large screens (1441px+) */
+      /* Large screens (1441px+) - Maximum full screen */
       @media (min-width: 1441px) {
-        .app { gap: 20px !important; max-width: 1400px; margin: 0 auto; }
-        #leftbar { width: 280px; min-width: 280px; }
-        #rightbar { width: 280px; min-width: 280px; }
-        #main { flex: 1; padding: 16px; }
-        .chat { padding: 16px; }
+        .app { 
+          gap: 16px !important; 
+          max-width: none !important;
+          height: 100vh;
+          overflow: hidden;
+        }
+        #leftbar { 
+          width: 280px !important; 
+          min-width: 280px !important;
+          overflow-y: auto;
+        }
+        #rightbar { 
+          width: 260px !important; 
+          min-width: 260px !important;
+          overflow-y: auto;
+        }
+        #main { 
+          flex: 1; 
+          padding: 12px !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+        }
+        .form-row { flex-shrink: 0; }
       }
       
-      /* Landscape orientation optimizations */
+      /* Landscape orientation - maintain full screen */
       @media (max-width: 768px) and (orientation: landscape) {
-        .chat { min-height: calc(100vh - 56px - 120px); }
-        .form-row { padding: 4px 8px; }
-        header { padding: 4px 8px; }
+        .app { height: 100vh !important; }
+        .chat { padding: 4px !important; }
+        .form-row { padding: 4px !important; }
+        header { padding: 4px 6px !important; }
       }
       
       /* High DPI displays */
+      @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+        button, input { border-width: 0.5px; }
+        .message { border-width: 0.5px; }
+      }
+      
+      /* Ensure all elements stay within viewport */
+      * { 
+        box-sizing: border-box; 
+      }
+      
+      /* Prevent horizontal overflow */
+      body, html { 
+        overflow-x: hidden; 
+        height: 100vh;
+        margin: 0;
+        padding: 0;
+      }
+      
+      /* Text wrapping to prevent overflow */
+      .message, .username, button, input { 
+        word-wrap: break-word; 
+        overflow-wrap: break-word; 
+        hyphens: auto;
+      }
+
       @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
         button, input { border-width: 0.5px; }
         .message { border-width: 0.5px; }

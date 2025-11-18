@@ -12281,7 +12281,6 @@ CHAT_HTML = """
                         <label><input type='checkbox' id='ADMIN_VIEW_ACTIVE'> View Active Admins</label><br>
                         <label><input type='checkbox' id='ADMIN_STEALTH_MODE'> Stealth Mode</label><br>
                         <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
-                        <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
                         <div style='margin-top:8px;padding-top:6px;border-top:1px dashed #e5e7eb'>
                           <label style='display:inline-flex;gap:6px;align-items:center'><input type='checkbox' id='ALERTS_ENABLED'> On-screen Alert (bottom-left)</label>
                           <textarea id='ALERTS_TEXT' placeholder='Alert text' rows='2' style='width:100%;margin-top:6px'></textarea>

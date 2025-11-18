@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Chatter - Optimized Flask + Socket.IO Chat Application
 Real-time messaging with immediate message delivery and no refresh required

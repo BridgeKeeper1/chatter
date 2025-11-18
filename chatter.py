@@ -12,9 +12,6 @@ import time
 import random
 import string
 import sqlite3
-import zlib
-import difflib
-import sys
 from datetime import datetime, timedelta, timezone
 from werkzeug.security import generate_password_hash
 from functools import wraps

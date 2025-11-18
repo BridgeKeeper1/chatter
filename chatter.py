@@ -2224,9 +2224,9 @@ def _spam_is_whitelisted_content(text: str) -> bool:
             return True
     
     # Check for common punctuation-only messages
-    if all(c in ".,!?;:-()[]{}"\" \t\n" for c in clean_text):
+    punctuation_chars = ".,!?;:-()[]{}\"" + chr(9) + chr(10)
+    if all(c in punctuation_chars for c in clean_text):
         return True
-    
     return False
 
 def _spam_is_user_showing_spam_behavior(username: str, text: str, timeframe: int = 60) -> bool:
@@ -2264,6 +2264,57 @@ def _spam_is_user_showing_spam_behavior(username: str, text: str, timeframe: int
     
     return False
 
+def _spam_is_near_duplicate(text: str, stored_msg: str, text_length: int) -> bool:
+    """Enhanced near-duplicate detection for paragraph variations."""
+    # Normalize both messages for comparison
+    def normalize_text(msg):
+        # Remove extra whitespace and convert to lowercase
+        normalized = re.sub(r'\s+', ' ', msg.lower().strip())
+        # Remove common filler words that users often add/remove
+        filler_words = {'the', 'a', 'an', 'and', 'or', 'but', 'so', 'very', 'really', 'just', 'also', 'too', 'quite', 'pretty', 'actually', 'basically', 'literally'}
+        words = [w for w in normalized.split() if w not in filler_words]
+        return ' '.join(words)
+    
+    # Normalize both messages
+    norm_text = normalize_text(text)
+    norm_stored = normalize_text(stored_msg)
+    
+    # If either is too short after normalization, use regular similarity
+    if len(norm_text) < 10 or len(norm_stored) < 10:
+        return difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio() > 0.85
+    
+    # Calculate different types of similarity
+    char_similarity = difflib.SequenceMatcher(None, norm_text, norm_stored).ratio()
+    
+    # Word-level similarity (order-independent)
+    text_words = set(norm_text.split())
+    stored_words = set(norm_stored.split())
+    if len(text_words) == 0 or len(stored_words) == 0:
+        word_similarity = 0
+    else:
+        common_words = len(text_words.intersection(stored_words))
+        total_words = len(text_words.union(stored_words))
+        word_similarity = common_words / total_words if total_words > 0 else 0
+    
+    # Length-aware thresholds for different message sizes
+    if text_length < 100:  # Short messages
+        char_threshold = 0.90
+        word_threshold = 0.85
+    elif text_length < 500:  # Medium messages
+        char_threshold = 0.80
+        word_threshold = 0.75
+    else:  # Long messages (paragraphs)
+        char_threshold = 0.70
+        word_threshold = 0.65
+    
+    # Combined similarity score (weighted average)
+    combined_similarity = (char_similarity * 0.6) + (word_similarity * 0.4)
+    
+    # Return True if either character similarity OR word similarity OR combined score exceeds threshold
+    return (char_similarity > char_threshold or 
+            word_similarity > word_threshold or 
+            combined_similarity > ((char_threshold + word_threshold) / 2))
+
 def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) -> tuple[bool, str]:
     """2. Intelligent Duplicate & Near-Duplicate Detection - Smart about common words."""
     if not text.strip():
@@ -2291,23 +2342,32 @@ def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) ->
         if stored_hash == message_hash and now - timestamp < timeframe:
             return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
     
-    # INTELLIGENT NEAR-DUPLICATE DETECTION: Focus on user behavior patterns
+    # ENHANCED NEAR-DUPLICATE DETECTION: Catches paragraph variations
     user_messages = spam_recent_messages[username]
     spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
     
-    # Check for rapid-fire similar messages (behavioral spam detection)
-    recent_similar_count = 0
+    # Check for sophisticated near-duplicates (paragraph variations)
+    text_length = len(text)
     for stored_msg, timestamp in spam_recent_messages[username]:
-        if now - timestamp < 60:  # Only check last minute for behavioral patterns
+        if now - timestamp < timeframe:  # Check within full timeframe for near-duplicates
             # Skip similarity check for whitelisted content
             if _spam_is_whitelisted_content(stored_msg):
                 continue
                 
-            similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
-            if similarity > 0.85:  # 85% similarity threshold
+            # Use enhanced detection for paragraph variations
+            if _spam_is_near_duplicate(text, stored_msg, text_length):
+                return False, f"Similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
+    
+    # Also check for rapid-fire behavior (multiple messages quickly)
+    recent_similar_count = 0
+    for stored_msg, timestamp in spam_recent_messages[username]:
+        if now - timestamp < 60:  # Only check last minute for behavioral patterns
+            if _spam_is_whitelisted_content(stored_msg):
+                continue
+            if _spam_is_near_duplicate(text, stored_msg, text_length):
                 recent_similar_count += 1
     
-    # Only flag if user is showing spam behavior (multiple similar messages quickly)
+    # Flag rapid similar messages as spam behavior
     if recent_similar_count >= 3:  # 3+ similar messages in 1 minute = spam behavior
         return False, f"Rapid similar messages detected. Please slow down and vary your messages."
     
@@ -2317,33 +2377,6 @@ def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) ->
     
     return True, ""
     
-    now = time.time()
-    message_hash = _spam_create_message_hash(text)
-    
-    # Clean old hashes
-    user_hashes = spam_message_hashes[username]
-    spam_message_hashes[username] = [(h, ts) for h, ts in user_hashes if now - ts < timeframe]
-    
-    # Check for exact duplicate
-    for stored_hash, timestamp in spam_message_hashes[username]:
-        if stored_hash == message_hash and now - timestamp < timeframe:
-            return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
-    
-    # Check for near-duplicates using fuzzy matching
-    user_messages = spam_recent_messages[username]
-    spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
-    
-    for stored_msg, timestamp in spam_recent_messages[username]:
-        if now - timestamp < timeframe:
-            similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
-            if similarity > 0.85:  # 85% similarity threshold
-                return False, f"Very similar message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
-    
-    # Store this message
-    spam_message_hashes[username].append((message_hash, now))
-    spam_recent_messages[username].append((text, now))
-    
-    return True, ""
 
 def _spam_payload_size_check(text: str, max_bytes: int = 8192) -> tuple[bool, str]:
     """3. Payload Size Monitoring - Check message byte size."""
@@ -2464,12 +2497,12 @@ def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
         return True, ""
     
     # Check for excessive whitespace (but be more lenient)
-    whitespace_ratio = len(re.findall(rs, text)) / len(text) if text else 0
+    whitespace_ratio = len(re.findall(r'\s', text)) / len(text) if text else 0
     if whitespace_ratio > 0.85:  # Increased from 0.7 to 0.85
         return False, "Message contains excessive whitespace. Please use normal formatting."
     
     # Check for repeated characters (but ignore common patterns)
-    repeated_chars = re.findall(r'(.)1{15,}', text)  # Increased from 10+ to 15+ characters
+    repeated_chars = re.findall(r'(.)\1{15,}', text)  # Increased from 10+ to 15+ characters
     if repeated_chars:
         # Allow common repeated patterns like "hahaha", "lololol", "nooooo"
         allowed_repeated = {'a', 'e', 'h', 'l', 'o', 'n', 's', 't'}
@@ -2481,7 +2514,7 @@ def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
         r'<script[^>]*>',  # Scripts are definitely suspicious
         r'<iframe[^>]*>',  # Iframes are suspicious
         r'javascript:',    # JavaScript URLs are suspicious
-        r'onw+s*=s*["][^']*[']  # Event handlers are suspicious
+        r"on\w+\s*=\s*["'][^"']*["']",  # Event handlers are suspicious
     ]
     
     html_matches = 0
@@ -2492,19 +2525,19 @@ def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
         return False, "Message appears to contain potentially malicious code. Please use plain text for chat."
     
     # Check for excessive line breaks (but be more lenient)
-    line_breaks = text.count('
-')
+    line_breaks = text.count("\n")
+    line_breaks = text.count("\n")
     if line_breaks > 30:  # Increased from 20 to 30
         return False, "Message contains too many line breaks. Please format your message more concisely."
     
     # Check for massive code dumps (but allow reasonable code sharing)
     if len(text) > 2000:  # Only check very long messages
         code_indicators = [
-            r'functions+w+s*(',
-            r'classs+w+s*[:{]',
-            r'w+s*=s*functions*(',
-            r'imports+w+',
-            r'froms+w+s+import'
+            r'function\s+\w+\s*\(',
+            r'class\s+\w+\s*[:{]',
+            r'\w+\s*=\s*function\s*\(',
+            r'import\s+\w+',
+            r'from\s+\w+\s+import'
         ]
         
         code_matches = 0
@@ -2653,7 +2686,6 @@ def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachm
         
         # SMART PRE-CHECK: Always allow whitelisted content
         if _spam_is_whitelisted_content(text):
-            return True, "", None
             return True, "", None
         
         # Get settings with defaults

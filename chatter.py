@@ -11296,7 +11296,7 @@ CHAT_HTML = """
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
                     // Delete item
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => {
+                    contextMenu.appendChild(makeItem('Delete Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
                     // DM Sender
@@ -11440,7 +11440,7 @@ CHAT_HTML = """
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                     }));
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    contextMenu.appendChild(makeItem('Delete Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11559,7 +11559,7 @@ CHAT_HTML = """
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                     }));
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    contextMenu.appendChild(makeItem('Delete Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });

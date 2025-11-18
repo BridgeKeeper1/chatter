@@ -2172,10 +2172,150 @@ def _spam_create_message_hash(text: str) -> str:
     # Create hash
     return hashlib.md5(normalized.encode('utf-8')).hexdigest()
 
+
+def _spam_is_whitelisted_content(text: str) -> bool:
+    """Check if content is whitelisted (common legitimate words/phrases)."""
+    if not text or not text.strip():
+        return True
+    
+    # Clean the text
+    clean_text = text.strip().lower()
+    
+    # Common single letters and short words that should NEVER be blocked
+    common_single_chars = {
+        "a", "i", "e", "o", "u", "y",  # vowels
+        "b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "w", "x", "z"  # consonants
+    }
+    
+    # Common short words (1-3 characters)
+    common_short_words = {
+        "ok", "hi", "bye", "yes", "no", "lol", "omg", "wtf", "brb", "ttyl", "gg", "gj", "ty", "np", "yw",
+        "is", "it", "to", "be", "we", "he", "me", "at", "on", "in", "or", "and", "the", "for", "you", "are",
+        "was", "but", "not", "can", "had", "her", "his", "she", "one", "our", "out", "day", "get", "has",
+        "him", "how", "man", "new", "now", "old", "see", "two", "way", "who", "boy", "did", "its", "let",
+        "put", "say", "she", "too", "use"
+    }
+    
+    # Common expressions and reactions
+    common_expressions = {
+        "haha", "hehe", "lmao", "rofl", "nice", "cool", "wow", "omg", "damn", "shit", "fuck", "hell",
+        "what", "when", "where", "why", "how", "who", "which", "that", "this", "here", "there",
+        "good", "bad", "great", "awesome", "terrible", "amazing", "perfect", "wrong", "right",
+        "hello", "goodbye", "thanks", "thank", "please", "sorry", "excuse", "welcome"
+    }
+    
+    # If it is just a single character, always allow (people say "e", "a", "i" legitimately)
+    if len(clean_text) == 1 and clean_text in common_single_chars:
+        return True
+    
+    # If it is a common short word, always allow
+    if clean_text in common_short_words:
+        return True
+    
+    # If it is a common expression, always allow
+    if clean_text in common_expressions:
+        return True
+    
+    # Check if it is just repeated common characters (like "hahaha", "lololol")
+    if len(set(clean_text)) <= 2 and len(clean_text) <= 10:
+        # Allow repeated patterns of common letters (ha, he, lo, etc.)
+        unique_chars = set(clean_text)
+        if unique_chars.issubset(common_single_chars):
+            return True
+    
+    # Check for common punctuation-only messages
+    if all(c in ".,!?;:-()[]{}"\" \t\n" for c in clean_text):
+        return True
+    
+    return False
+
+def _spam_is_user_showing_spam_behavior(username: str, text: str, timeframe: int = 60) -> bool:
+    """Check if user is exhibiting spam-like behavior patterns."""
+    now = time.time()
+    
+    # Get user recent messages
+    user_messages = spam_recent_messages.get(username, [])
+    recent_messages = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
+    
+    if len(recent_messages) < 3:  # Need at least 3 messages to detect pattern
+        return False
+    
+    # Check for rapid single-character spam (like "e e e e e")
+    single_char_count = 0
+    for msg, ts in recent_messages:
+        if len(msg.strip()) == 1:
+            single_char_count += 1
+    
+    if single_char_count >= 5:  # 5+ single characters in timeframe = spam behavior
+        return True
+    
+    # Check for rapid identical messages
+    identical_count = 0
+    for msg, ts in recent_messages:
+        if msg.strip().lower() == text.strip().lower():
+            identical_count += 1
+    
+    if identical_count >= 3:  # 3+ identical messages = spam behavior
+        return True
+    
+    # Check for excessive message frequency (more than 1 message per 2 seconds)
+    if len(recent_messages) >= 10:  # 10+ messages in 1 minute = spam behavior
+        return True
+    
+    return False
+
 def _spam_duplicate_detection(username: str, text: str, timeframe: int = 300) -> tuple[bool, str]:
-    """2. Duplicate & Near-Duplicate Detection - Check for repeated content."""
+    """2. Intelligent Duplicate & Near-Duplicate Detection - Smart about common words."""
     if not text.strip():
         return True, ""
+    
+    now = time.time()
+    
+    # SMART FILTERING: Don't flag common legitimate content
+    if _spam_is_whitelisted_content(text):
+        return True, ""
+    
+    # Check if user is showing spam behavior patterns
+    if _spam_is_user_showing_spam_behavior(username, text):
+        _spam_record_violation(username, "spam_behavior_detected", 3)
+        return False, "Spam-like behavior detected. Please slow down and vary your messages."
+    
+    message_hash = _spam_create_message_hash(text)
+    
+    # Clean old hashes
+    user_hashes = spam_message_hashes[username]
+    spam_message_hashes[username] = [(h, ts) for h, ts in user_hashes if now - ts < timeframe]
+    
+    # Check for exact duplicate (but only if not whitelisted)
+    for stored_hash, timestamp in spam_message_hashes[username]:
+        if stored_hash == message_hash and now - timestamp < timeframe:
+            return False, f"Duplicate message detected. Please wait {int(timeframe - (now - timestamp))} seconds before sending similar content."
+    
+    # INTELLIGENT NEAR-DUPLICATE DETECTION: Focus on user behavior patterns
+    user_messages = spam_recent_messages[username]
+    spam_recent_messages[username] = [(msg, ts) for msg, ts in user_messages if now - ts < timeframe]
+    
+    # Check for rapid-fire similar messages (behavioral spam detection)
+    recent_similar_count = 0
+    for stored_msg, timestamp in spam_recent_messages[username]:
+        if now - timestamp < 60:  # Only check last minute for behavioral patterns
+            # Skip similarity check for whitelisted content
+            if _spam_is_whitelisted_content(stored_msg):
+                continue
+                
+            similarity = difflib.SequenceMatcher(None, text.lower(), stored_msg.lower()).ratio()
+            if similarity > 0.85:  # 85% similarity threshold
+                recent_similar_count += 1
+    
+    # Only flag if user is showing spam behavior (multiple similar messages quickly)
+    if recent_similar_count >= 3:  # 3+ similar messages in 1 minute = spam behavior
+        return False, f"Rapid similar messages detected. Please slow down and vary your messages."
+    
+    # Store this message
+    spam_message_hashes[username].append((message_hash, now))
+    spam_recent_messages[username].append((text, now))
+    
+    return True, ""
     
     now = time.time()
     message_hash = _spam_create_message_hash(text)
@@ -2315,9 +2455,66 @@ def _spam_individual_slow_mode_check(username: str) -> tuple[bool, str]:
     return True, ""
 
 def _spam_content_pattern_analysis(text: str) -> tuple[bool, str]:
-    """6. Content Pattern Analysis - Detect suspicious patterns."""
+    """6. Intelligent Content Pattern Analysis - Smart about legitimate content."""
     if not text:
         return True, ""
+    
+    # SMART FILTERING: Don't flag whitelisted content
+    if _spam_is_whitelisted_content(text):
+        return True, ""
+    
+    # Check for excessive whitespace (but be more lenient)
+    whitespace_ratio = len(re.findall(rs, text)) / len(text) if text else 0
+    if whitespace_ratio > 0.85:  # Increased from 0.7 to 0.85
+        return False, "Message contains excessive whitespace. Please use normal formatting."
+    
+    # Check for repeated characters (but ignore common patterns)
+    repeated_chars = re.findall(r'(.)1{15,}', text)  # Increased from 10+ to 15+ characters
+    if repeated_chars:
+        # Allow common repeated patterns like "hahaha", "lololol", "nooooo"
+        allowed_repeated = {'a', 'e', 'h', 'l', 'o', 'n', 's', 't'}
+        if not all(char.lower() in allowed_repeated for char in repeated_chars):
+            return False, "Message contains excessive repeated characters. Please use normal text."
+    
+    # Check for HTML/CSS patterns (but be more selective)
+    suspicious_html_patterns = [
+        r'<script[^>]*>',  # Scripts are definitely suspicious
+        r'<iframe[^>]*>',  # Iframes are suspicious
+        r'javascript:',    # JavaScript URLs are suspicious
+        r'onw+s*=s*["][^']*[']  # Event handlers are suspicious
+    ]
+    
+    html_matches = 0
+    for pattern in suspicious_html_patterns:
+        html_matches += len(re.findall(pattern, text, re.IGNORECASE))
+    
+    if html_matches > 2:  # Reduced threshold, focus on truly suspicious patterns
+        return False, "Message appears to contain potentially malicious code. Please use plain text for chat."
+    
+    # Check for excessive line breaks (but be more lenient)
+    line_breaks = text.count('
+')
+    if line_breaks > 30:  # Increased from 20 to 30
+        return False, "Message contains too many line breaks. Please format your message more concisely."
+    
+    # Check for massive code dumps (but allow reasonable code sharing)
+    if len(text) > 2000:  # Only check very long messages
+        code_indicators = [
+            r'functions+w+s*(',
+            r'classs+w+s*[:{]',
+            r'w+s*=s*functions*(',
+            r'imports+w+',
+            r'froms+w+s+import'
+        ]
+        
+        code_matches = 0
+        for pattern in code_indicators:
+            code_matches += len(re.findall(pattern, text, re.IGNORECASE))
+        
+        if code_matches > 10:  # Only flag obvious code dumps
+            return False, "Message appears to be a large code dump. Please use a code sharing service for large code blocks."
+    
+    return True, ""
     
     # Check for excessive whitespace
     whitespace_ratio = len(re.findall(r'\s', text)) / len(text) if text else 0
@@ -2440,13 +2637,23 @@ def _spam_process_split_queue(username: str):
 
 def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachment: bool = False, get_setting_func=None):
     """
-    Comprehensive anti-spam gate with all 7 features.
+    Intelligent Comprehensive Anti-Spam Gate with Smart Content Recognition.
+    
+    This system is designed to:
+    - NEVER block common words like "a", "e", "i", "ok", "hi", "lol", etc.
+    - Focus on USER BEHAVIOR patterns rather than content patterns
+    - Only flag actual spam behavior, not legitimate single letters or words
     
     Returns:
         (allowed: bool, reason: str, auto_split_chunks: list[str] or None)
     """
     try:
         if not username or not text:
+            return True, "", None
+        
+        # SMART PRE-CHECK: Always allow whitelisted content
+        if _spam_is_whitelisted_content(text):
+            return True, "", None
             return True, "", None
         
         # Get settings with defaults

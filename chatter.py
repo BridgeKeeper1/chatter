@@ -156,312 +156,6 @@ def _dbx_user() -> str:
         return False
 
 # ============================================================================
-# COMPREHENSIVE EMERGENCY SHUTDOWN SYSTEM ENHANCEMENTS
-# ============================================================================
-
-# Emergency system state tracking
-emergency_system_state = {
-    'active_users_at_shutdown': [],
-    'recent_actions_at_shutdown': [],
-    'system_metrics_at_shutdown': {},
-    'shutdown_trigger': None,
-    'shutdown_timestamp': None,
-    'recovery_stage': 'normal',  # normal, emergency, recovery_stage1, recovery_stage2, recovery_stage3
-    'locked_users': set(),
-    'automatic_triggers_active': True,
-    'last_health_check': 0,
-    'resource_monitoring': {
-        'cpu_alerts': 0,
-        'memory_alerts': 0,
-        'db_connection_failures': 0,
-        'exception_count': 0,
-        'ddos_score': 0
-    }
-}
-
-def _get_system_metrics():
-    """Collect current system metrics for monitoring and logging"""
-    try:
-        import psutil
-        metrics = {
-            'cpu_percent': psutil.cpu_percent(interval=0.1),
-            'memory_percent': psutil.virtual_memory().percent,
-            'disk_usage': psutil.disk_usage('/').percent,
-            'active_connections': len(online_users),
-            'timestamp': time.time()
-        }
-    except ImportError:
-        # Fallback metrics without psutil
-        metrics = {
-            'active_connections': len(online_users),
-            'timestamp': time.time(),
-            'cpu_percent': 0,
-            'memory_percent': 0,
-            'disk_usage': 0
-        }
-    except Exception:
-        metrics = {'timestamp': time.time(), 'error': 'metrics_collection_failed'}
-    
-    return metrics
-
-def _capture_emergency_snapshot():
-    """Capture comprehensive system state during emergency shutdown"""
-    try:
-        # Capture active users
-        emergency_system_state['active_users_at_shutdown'] = list(online_users.keys())
-        
-        # Capture system metrics
-        emergency_system_state['system_metrics_at_shutdown'] = _get_system_metrics()
-        
-        # Capture recent actions (last 50 from audit log)
-        try:
-            db = get_db()
-            cur = db.cursor()
-            cur.execute('SELECT actor, action, target, created_at FROM admin_audit ORDER BY created_at DESC LIMIT 50')
-            emergency_system_state['recent_actions_at_shutdown'] = [
-                {'actor': r[0], 'action': r[1], 'target': r[2], 'timestamp': r[3]}
-                for r in cur.fetchall()
-            ]
-        except Exception:
-            emergency_system_state['recent_actions_at_shutdown'] = []
-        
-        # Set shutdown timestamp
-        emergency_system_state['shutdown_timestamp'] = time.time()
-        
-        # Log comprehensive emergency state
-        _log_incident('emergency_state_capture', {
-            'active_users': len(emergency_system_state['active_users_at_shutdown']),
-            'system_metrics': emergency_system_state['system_metrics_at_shutdown'],
-            'recent_actions_count': len(emergency_system_state['recent_actions_at_shutdown']),
-            'trigger': emergency_system_state.get('shutdown_trigger', 'manual')
-        })
-        
-    except Exception as e:
-        _log_incident('emergency_state_capture_failed', {'error': str(e)})
-
-def _trigger_emergency_shutdown(trigger_source, trigger_details=None, actor=None):
-    """Trigger emergency shutdown with comprehensive logging and state capture"""
-    try:
-        # Set emergency state
-        emergency_system_state['shutdown_trigger'] = trigger_source
-        emergency_system_state['recovery_stage'] = 'emergency'
-        
-        # Capture system state before shutdown
-        _capture_emergency_snapshot()
-        
-        # Enable emergency shutdown setting
-        set_setting('ADMIN_EMERGENCY_SHUTDOWN', '1')
-        
-        # Create database snapshot
-        _maybe_snapshot_db_on_emergency('0', '1')
-        
-        # Log the emergency trigger
-        meta = {
-            'trigger_source': trigger_source,
-            'trigger_details': trigger_details or {},
-            'actor': actor or session.get('username', 'system'),
-            'active_users_count': len(online_users),
-            'timestamp': time.time()
-        }
-        _log_incident('emergency_shutdown_triggered', meta)
-        
-        # Send emergency notifications to all connected users
-        try:
-            socketio.emit('emergency_shutdown', {
-                'message': 'Emergency maintenance in progress. Chat is now read-only.',
-                'timestamp': time.time()
-            }, room='chat_room')
-        except Exception:
-            pass
-        
-        return True
-        
-    except Exception as e:
-        _log_incident('emergency_shutdown_failed', {'error': str(e), 'trigger': trigger_source})
-        return False
-
-def _check_automatic_triggers():
-    """Monitor system health and trigger emergency shutdown if thresholds exceeded"""
-    if not emergency_system_state['automatic_triggers_active']:
-        return
-    
-    try:
-        now = time.time()
-        
-        # Only check every 30 seconds to avoid overhead
-        if now - emergency_system_state['last_health_check'] < 30:
-            return
-        
-        emergency_system_state['last_health_check'] = now
-        
-        # Get current metrics
-        metrics = _get_system_metrics()
-        
-        # Check CPU usage (trigger if >90% for extended period)
-        if metrics.get('cpu_percent', 0) > 90:
-            emergency_system_state['resource_monitoring']['cpu_alerts'] += 1
-            if emergency_system_state['resource_monitoring']['cpu_alerts'] >= 3:
-                _trigger_emergency_shutdown('cpu_exhaustion', {
-                    'cpu_percent': metrics['cpu_percent'],
-                    'consecutive_alerts': emergency_system_state['resource_monitoring']['cpu_alerts']
-                })
-                return
-        else:
-            emergency_system_state['resource_monitoring']['cpu_alerts'] = 0
-        
-        # Check memory usage (trigger if >95%)
-        if metrics.get('memory_percent', 0) > 95:
-            emergency_system_state['resource_monitoring']['memory_alerts'] += 1
-            if emergency_system_state['resource_monitoring']['memory_alerts'] >= 2:
-                _trigger_emergency_shutdown('memory_exhaustion', {
-                    'memory_percent': metrics['memory_percent'],
-                    'consecutive_alerts': emergency_system_state['resource_monitoring']['memory_alerts']
-                })
-                return
-        else:
-            emergency_system_state['resource_monitoring']['memory_alerts'] = 0
-        
-        # Check for too many active connections (potential DDoS)
-        active_count = len(online_users)
-        if active_count > 1000:  # Configurable threshold
-            emergency_system_state['resource_monitoring']['ddos_score'] += 1
-            if emergency_system_state['resource_monitoring']['ddos_score'] >= 5:
-                _trigger_emergency_shutdown('ddos_detected', {
-                    'active_connections': active_count,
-                    'threshold': 1000
-                })
-                return
-        else:
-            emergency_system_state['resource_monitoring']['ddos_score'] = max(0, 
-                emergency_system_state['resource_monitoring']['ddos_score'] - 1)
-        
-    except Exception as e:
-        _log_incident('automatic_trigger_check_failed', {'error': str(e)})
-
-def _staged_recovery_step(stage, actor=None):
-    """Execute staged recovery steps"""
-    try:
-        actor = actor or session.get('username', 'system')
-        
-        if stage == 'stage1':  # Enable read-only chat
-            emergency_system_state['recovery_stage'] = 'recovery_stage1'
-            set_setting('EMERGENCY_RECOVERY_STAGE', '1')
-            _log_incident('recovery_stage1', {'actor': actor, 'description': 'Read-only chat enabled'})
-            
-        elif stage == 'stage2':  # Enable limited write operations
-            emergency_system_state['recovery_stage'] = 'recovery_stage2'
-            set_setting('EMERGENCY_RECOVERY_STAGE', '2')
-            _log_incident('recovery_stage2', {'actor': actor, 'description': 'Limited write operations enabled'})
-            
-        elif stage == 'stage3':  # Full system recovery
-            emergency_system_state['recovery_stage'] = 'recovery_stage3'
-            set_setting('EMERGENCY_RECOVERY_STAGE', '3')
-            _log_incident('recovery_stage3', {'actor': actor, 'description': 'Full system recovery initiated'})
-            
-        elif stage == 'complete':  # Complete recovery
-            emergency_system_state['recovery_stage'] = 'normal'
-            emergency_system_state['locked_users'].clear()
-            set_setting('ADMIN_EMERGENCY_SHUTDOWN', '0')
-            set_setting('EMERGENCY_RECOVERY_STAGE', '0')
-            _log_incident('recovery_complete', {'actor': actor, 'description': 'Emergency shutdown ended'})
-            
-            # Notify all users
-            try:
-                socketio.emit('emergency_recovery', {
-                    'message': 'Emergency maintenance completed. Full functionality restored.',
-                    'timestamp': time.time()
-                }, room='chat_room')
-            except Exception:
-                pass
-        
-        return True
-        
-    except Exception as e:
-        _log_incident('staged_recovery_failed', {'stage': stage, 'error': str(e), 'actor': actor})
-        return False
-
-def _lock_user_emergency(username, reason='Emergency lockdown', actor=None):
-    """Lock a specific user during emergency"""
-    try:
-        emergency_system_state['locked_users'].add(username)
-        actor = actor or session.get('username', 'system')
-        
-        _log_incident('emergency_user_lock', {
-            'target_user': username,
-            'reason': reason,
-            'actor': actor,
-            'timestamp': time.time()
-        })
-        
-        # Disconnect user if online
-        try:
-            if username in online_users:
-                # Send notification before disconnect
-                socketio.emit('system_message', 
-                    f'Your account has been temporarily locked: {reason}', 
-                    room=f'user:{username}')
-                # Note: Actual disconnection would require tracking socket IDs
-        except Exception:
-            pass
-        
-        return True
-        
-    except Exception as e:
-        _log_incident('emergency_user_lock_failed', {'error': str(e), 'target': username})
-        return False
-
-def _unlock_user_emergency(username, actor=None):
-    """Unlock a user during emergency"""
-    try:
-        emergency_system_state['locked_users'].discard(username)
-        actor = actor or session.get('username', 'system')
-        
-        _log_incident('emergency_user_unlock', {
-            'target_user': username,
-            'actor': actor,
-            'timestamp': time.time()
-        })
-        
-        return True
-        
-    except Exception as e:
-        _log_incident('emergency_user_unlock_failed', {'error': str(e), 'target': username})
-        return False
-
-def _is_user_locked_emergency(username):
-    """Check if user is locked during emergency"""
-    return username in emergency_system_state['locked_users']
-
-def _maybe_snapshot_db_on_emergency(old_val: str, new_val: str):
-    """When emergency shutdown flips from 0 -> 1, take a best-effort DB snapshot.
-
-    This is intentionally lightweight: it copies the SQLite file and logs the event.
-    """
-    try:
-        if old_val == '0' and new_val == '1':
-            try:
-                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-            except Exception:
-                ts = str(int(time.time()))
-            base = os.path.basename(DB_PATH)
-            snap_name = f"emergency_{ts}_{base}"
-            dest = os.path.join(BACKUP_DIR, snap_name)
-            try:
-                shutil.copy2(DB_PATH, dest)
-            except Exception:
-                # If copy fails, still log the attempt
-                dest = ''
-            meta = {'snapshot': dest or 'failed', 'db_path': DB_PATH}
-            try:
-                u = session.get('username') or ''
-                if u:
-                    meta['actor'] = u
-            except Exception:
-                pass
-            _log_incident('emergency_shutdown', meta)
-    except Exception:
-        pass
-
 # Ensure Group DM schema exists and has required columns
 def _ensure_gdm_schema():
     try:
@@ -517,7 +211,6 @@ def _seed_defaults_if_needed():
 def _log_incident(kind: str, meta: dict | None = None):
     """Append a structured incident line to the log file.
 
-    Used for emergency shutdown and other critical events.
     """
     try:
         ts = _format_web_timestamp(datetime.utcnow())
@@ -533,6 +226,419 @@ def _log_incident(kind: str, meta: dict | None = None):
         _append_log_line(json.dumps(payload, ensure_ascii=False))
     except Exception:
         pass
+
+# ============================================================================
+# COMPREHENSIVE ANTI-SPAM SYSTEM
+# ============================================================================
+
+import hashlib
+import difflib
+from collections import defaultdict, deque
+import gzip
+
+# Anti-spam system state - tracks user behavior patterns and sanctions
+antispam_system_state = {
+    'user_behavior': defaultdict(lambda: {
+        'message_history': deque(maxlen=50),  # Recent messages for duplicate detection
+        'message_times': deque(maxlen=100),   # Timestamps for rate analysis
+        'message_lengths': deque(maxlen=20),  # Recent message lengths
+        'sanction_level': 0,                  # 0=none, 1=warning, 2=slow_mode, 3=restricted
+        'sanction_count': defaultdict(int),   # Count of each sanction type
+        'last_sanction_time': 0,              # When last sanction was applied
+        'slow_mode_until': 0,                 # Timestamp when slow mode expires
+        'last_message_time': 0,               # For individual slow mode enforcement
+        'pattern_violations': defaultdict(int), # Track specific pattern violations
+        'warning_count': 0,                   # Number of warnings issued
+    }),
+    'global_stats': {
+        'total_messages_blocked': 0,
+        'total_warnings_issued': 0,
+        'total_slow_modes_applied': 0,
+        'total_restrictions_applied': 0,
+        'last_cleanup_time': time.time(),
+    },
+    'settings_cache': {},  # Cache for anti-spam settings
+    'message_hashes': deque(maxlen=1000),  # Global recent message hashes for duplicate detection
+}
+
+def _get_antispam_setting(key, default='0'):
+    """Get anti-spam setting with caching"""
+    try:
+        cache_key = f'ANTISPAM_{key}'
+        if cache_key in antispam_system_state['settings_cache']:
+            return antispam_system_state['settings_cache'][cache_key]
+        
+        value = get_setting(cache_key, default)
+        antispam_system_state['settings_cache'][cache_key] = value
+        return value
+    except Exception:
+        return default
+
+def _clear_antispam_settings_cache():
+    """Clear settings cache to force reload"""
+    antispam_system_state['settings_cache'].clear()
+
+def _cleanup_antispam_memory():
+    """Clean up old data to prevent memory leaks"""
+    try:
+        now = time.time()
+        # Only cleanup every 10 minutes
+        if now - antispam_system_state['global_stats']['last_cleanup_time'] < 600:
+            return
+        
+        # Clean up old user behavior data
+        cutoff_time = now - 3600  # 1 hour ago
+        users_to_remove = []
+        
+        for username, data in antispam_system_state['user_behavior'].items():
+            # Remove old timestamps
+            while data['message_times'] and data['message_times'][0] < cutoff_time:
+                data['message_times'].popleft()
+            
+            # If user has no recent activity, mark for removal
+            if not data['message_times'] and data['last_message_time'] < cutoff_time:
+                users_to_remove.append(username)
+        
+        # Remove inactive users
+        for username in users_to_remove:
+            del antispam_system_state['user_behavior'][username]
+        
+        antispam_system_state['global_stats']['last_cleanup_time'] = now
+    except Exception:
+        pass
+
+def _calculate_message_hash(text, username):
+    """Calculate hash for duplicate detection"""
+    try:
+        # Normalize text for comparison
+        normalized = re.sub(r'\s+', ' ', (text or '').strip().lower())
+        content = f"{username}:{normalized}"
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    except Exception:
+        return None
+
+def _fuzzy_similarity(text1, text2):
+    """Calculate fuzzy similarity between two texts (0.0 to 1.0)"""
+    try:
+        if not text1 or not text2:
+            return 0.0
+        
+        # Normalize texts
+        norm1 = re.sub(r'\s+', ' ', text1.strip().lower())
+        norm2 = re.sub(r'\s+', ' ', text2.strip().lower())
+        
+        if norm1 == norm2:
+            return 1.0
+        
+        # Use difflib for similarity
+        similarity = difflib.SequenceMatcher(None, norm1, norm2).ratio()
+        return similarity
+    except Exception:
+        return 0.0
+
+def _is_near_duplicate(text, username, threshold=0.85):
+    """Check if message is a near-duplicate of recent messages"""
+    try:
+        user_data = antispam_system_state['user_behavior'][username]
+        
+        # Check against user's recent messages
+        for recent_msg in list(user_data['message_history'])[-10:]:  # Check last 10 messages
+            similarity = _fuzzy_similarity(text, recent_msg)
+            if similarity >= threshold:
+                return True, similarity
+        
+        return False, 0.0
+    except Exception:
+        return False, 0.0
+
+def _compress_and_measure(text):
+    """Compress text and measure payload size"""
+    try:
+        if not text:
+            return 0, 0
+        
+        original_size = len(text.encode('utf-8'))
+        compressed = gzip.compress(text.encode('utf-8'))
+        compressed_size = len(compressed)
+        
+        return original_size, compressed_size
+    except Exception:
+        return 0, 0
+
+def _detect_suspicious_patterns(text):
+    """Detect suspicious content patterns"""
+    try:
+        if not text:
+            return []
+        
+        violations = []
+        
+        # Excessive whitespace
+        whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
+        if whitespace_ratio > 0.7:
+            violations.append('excessive_whitespace')
+        
+        # HTML/CSS patterns
+        html_tags = len(re.findall(r'<[^>]+>', text))
+        if html_tags > 10:
+            violations.append('excessive_html')
+        
+        # Repeated structures
+        div_count = len(re.findall(r'<div[^>]*>', text, re.IGNORECASE))
+        script_count = len(re.findall(r'<script[^>]*>', text, re.IGNORECASE))
+        br_count = len(re.findall(r'<br[^>]*>', text, re.IGNORECASE))
+        
+        if div_count > 5:
+            violations.append('excessive_divs')
+        if script_count > 0:
+            violations.append('script_tags')
+        if br_count > 20:
+            violations.append('excessive_breaks')
+        
+        # Code block patterns
+        code_blocks = len(re.findall(r'```[\s\S]*?```', text))
+        if code_blocks > 3:
+            violations.append('excessive_code_blocks')
+        
+        return violations
+    except Exception:
+        return []
+
+def _split_message_intelligently(text, max_length=800):
+    """Split message by paragraphs and line breaks"""
+    try:
+        if not text or len(text) <= max_length:
+            return [text] if text else []
+        
+        parts = []
+        
+        # First try splitting by double newlines (paragraphs)
+        paragraphs = text.split('\n\n')
+        current_part = ""
+        
+        for paragraph in paragraphs:
+            if len(current_part + paragraph) <= max_length:
+                current_part += paragraph + '\n\n'
+            else:
+                if current_part:
+                    parts.append(current_part.strip())
+                    current_part = ""
+                
+                # If paragraph itself is too long, split by single newlines
+                if len(paragraph) > max_length:
+                    lines = paragraph.split('\n')
+                    for line in lines:
+                        if len(current_part + line) <= max_length:
+                            current_part += line + '\n'
+                        else:
+                            if current_part:
+                                parts.append(current_part.strip())
+                            current_part = line + '\n'
+                else:
+                    current_part = paragraph + '\n\n'
+        
+        if current_part:
+            parts.append(current_part.strip())
+        
+        return parts
+    except Exception:
+        return [text] if text else []
+
+def _apply_progressive_sanction(username, violation_type):
+    """Apply progressive sanctions based on user behavior"""
+    try:
+        user_data = antispam_system_state['user_behavior'][username]
+        now = time.time()
+        
+        # Increment violation count
+        user_data['sanction_count'][violation_type] += 1
+        total_violations = sum(user_data['sanction_count'].values())
+        
+        # Determine sanction level based on total violations
+        if total_violations == 1:
+            # First violation - warning
+            user_data['sanction_level'] = 1
+            user_data['warning_count'] += 1
+            user_data['last_sanction_time'] = now
+            antispam_system_state['global_stats']['total_warnings_issued'] += 1
+            return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
+        
+        elif total_violations <= 3:
+            # Second/third violation - slow mode
+            user_data['sanction_level'] = 2
+            slow_duration = min(10 + (total_violations * 5), 60)  # 10-60 seconds
+            user_data['slow_mode_until'] = now + slow_duration
+            user_data['last_sanction_time'] = now
+            antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
+            return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
+        
+        else:
+            # Fourth+ violation - restricted state
+            user_data['sanction_level'] = 3
+            restriction_duration = min(300 + (total_violations * 60), 1800)  # 5-30 minutes
+            user_data['slow_mode_until'] = now + restriction_duration
+            user_data['last_sanction_time'] = now
+            antispam_system_state['global_stats']['total_restrictions_applied'] += 1
+            return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
+    
+    except Exception:
+        return 'warning', "⚠️ Please avoid spamming."
+
+def _is_user_in_slow_mode(username):
+    """Check if user is currently in slow mode"""
+    try:
+        user_data = antispam_system_state['user_behavior'][username]
+        now = time.time()
+        
+        if user_data['slow_mode_until'] > now:
+            remaining = int(user_data['slow_mode_until'] - now)
+            return True, remaining
+        
+        return False, 0
+    except Exception:
+        return False, 0
+
+def _should_apply_individual_slow_mode(username):
+    """Check if individual slow mode should be applied based on behavior"""
+    try:
+        user_data = antispam_system_state['user_behavior'][username]
+        now = time.time()
+        
+        # Check recent message frequency
+        recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
+        
+        if len(recent_messages) >= 10:  # 10+ messages in last minute
+            return True, "🐌 Automatic slow mode: Too many messages in a short time."
+        
+        # Check for rapid large messages
+        recent_large = 0
+        for i, length in enumerate(list(user_data['message_lengths'])[-5:]):
+            if length > 500:  # Large message
+                recent_large += 1
+        
+        if recent_large >= 3:  # 3+ large messages recently
+            return True, "🐌 Automatic slow mode: Multiple large messages detected."
+        
+        return False, ""
+    except Exception:
+        return False, ""
+
+def antispam_check_message(username, text, message_type="public", has_attachment=False):
+    """
+    Main anti-spam check function - returns (allowed, message, split_parts)
+    
+    This is the core function called by the message pipeline to check if a message
+    should be allowed, blocked, or split. Implements all 7 anti-spam features.
+    """
+    try:
+        # Clean up memory periodically
+        _cleanup_antispam_memory()
+        
+        # Check if anti-spam is enabled
+        if _get_antispam_setting('ENABLED', '1') != '1':
+            return True, "", [text] if text else []
+        
+        # Skip checks for superadmins if configured
+        try:
+            if _get_antispam_setting('SKIP_SUPERADMINS', '1') == '1' and is_superadmin(username):
+                return True, "", [text] if text else []
+        except Exception:
+            pass
+        
+        user_data = antispam_system_state['user_behavior'][username]
+        now = time.time()
+        
+        # Update user activity
+        user_data['last_message_time'] = now
+        user_data['message_times'].append(now)
+        if text:
+            user_data['message_lengths'].append(len(text))
+        
+        # 1. CHECK SLOW MODE STATUS
+        in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
+        if in_slow_mode:
+            antispam_system_state['global_stats']['total_messages_blocked'] += 1
+            return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
+        
+        # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
+        should_slow, slow_msg = _should_apply_individual_slow_mode(username)
+        if should_slow:
+            user_data['slow_mode_until'] = now + 10  # 10 second cooldown
+            antispam_system_state['global_stats']['total_messages_blocked'] += 1
+            return False, slow_msg, []
+        
+        # Skip further checks for empty messages with attachments
+        if not text and has_attachment:
+            return True, "", []
+        
+        if not text:
+            return True, "", []
+        
+        # 3. MESSAGE LENGTH LIMITS
+        max_length = int(_get_antispam_setting('MAX_MESSAGE_LENGTH', '1000'))
+        if len(text) > max_length:
+            # Check if auto-split is enabled
+            if _get_antispam_setting('AUTO_SPLIT_ENABLED', '1') == '1':
+                split_parts = _split_message_intelligently(text, max_length)
+                if len(split_parts) > 1:
+                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
+            
+            # Apply sanction for oversized message
+            sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
+            antispam_system_state['global_stats']['total_messages_blocked'] += 1
+            return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
+        
+        # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
+        if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
+            is_duplicate, similarity = _is_near_duplicate(text, username)
+            if is_duplicate:
+                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
+                antispam_system_state['global_stats']['total_messages_blocked'] += 1
+                return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
+        
+        # 5. PAYLOAD SIZE MONITORING
+        if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
+            original_size, compressed_size = _compress_and_measure(text)
+            max_payload = int(_get_antispam_setting('MAX_PAYLOAD_SIZE', '10000'))
+            
+            if original_size > max_payload:
+                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
+                antispam_system_state['global_stats']['total_messages_blocked'] += 1
+                return False, f"❌ Message payload too large. {sanction_msg}", []
+        
+        # 6. CONTENT PATTERN ANALYSIS
+        if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
+            violations = _detect_suspicious_patterns(text)
+            if violations:
+                # Track pattern violations
+                for violation in violations:
+                    user_data['pattern_violations'][violation] += 1
+                
+                # Apply sanction if too many pattern violations
+                total_pattern_violations = sum(user_data['pattern_violations'].values())
+                if total_pattern_violations >= 3:
+                    sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
+                    antispam_system_state['global_stats']['total_messages_blocked'] += 1
+                    return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
+        
+        # Store message in history for future duplicate detection
+        user_data['message_history'].append(text)
+        
+        # Calculate and store message hash
+        msg_hash = _calculate_message_hash(text, username)
+        if msg_hash:
+            antispam_system_state['message_hashes'].append(msg_hash)
+        
+        # Message passed all checks
+        return True, "", [text]
+        
+    except Exception as e:
+        # On error, allow message but log the issue
+        try:
+            _log_incident('antispam_error', {'username': username, 'error': str(e)})
+        except Exception:
+            pass
+        return True, "", [text] if text else []
 
 # ---- Admins UI script injection (registered later to avoid NameError) ----
 def _inject_admins_js(resp):
@@ -1716,10 +1822,8 @@ def set_setting(key: str, value: str):
     try:
         _ensure_app_settings()
         db = get_db(); cur = db.cursor()
-        # For emergency toggle, read old value so we can detect 0->1 transitions
         old_val = None
         try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
                 cur.execute('SELECT value FROM app_settings WHERE key=?', (key,))
                 row = cur.fetchone()
                 if row is not None:
@@ -1728,11 +1832,6 @@ def set_setting(key: str, value: str):
             old_val = None
         cur.execute('INSERT OR REPLACE INTO app_settings(key, value) VALUES(?,?)', (key, str(value)))
         db.commit()
-        try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
-                _maybe_snapshot_db_on_emergency(str(old_val or '0'), str(value))
-        except Exception:
-            pass
         return True
     except Exception:
         return False
@@ -2647,78 +2746,14 @@ def _clear_downtime_ips():
     except Exception:
         pass
 
-def _is_emergency_shutdown() -> bool:
-    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
-
-    This is used to enforce a global emergency read-only mode.
-    """
-    try:
-        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
-    except Exception:
-        return False
-
-def _emergency_write_block(user: str | None = None) -> bool:
-    """Return True if writes should be blocked for this user due to emergency shutdown.
-
-    Superadmins are allowed to continue making changes so they can manage recovery.
-    Also checks for user-specific emergency locks and triggers automatic monitoring.
-    """
-    try:
-        # Run automatic trigger checks
-        _check_automatic_triggers()
-        
-        if not _is_emergency_shutdown():
-            return False
-        
-        # Check if user is specifically locked during emergency
-        if user and _is_user_locked_emergency(user):
-            try:
-                emit("system_message", "Your account is temporarily locked during emergency maintenance", room=f"user:{user}")
-            except Exception:
-                pass
-            return True
-        
-        # Allow superadmins to keep writing during emergency
-        try:
-            if user and is_superadmin(user):
-                return False
-        except Exception:
-            pass
-        
-        # Best-effort notification to the user; do not persist
-        try:
-            if user:
-                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f"user:{user}")
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-        # Allow superadmins to keep writing during emergency
-        try:
-            if user and is_superadmin(user):
-                return False
-        except Exception:
-            pass
-        # Best-effort notification to the user; do not persist
-        try:
-            if user:
-                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
 
 @app.before_request
 def _downtime_gate():
     try:
-        # Emergency shutdown piggybacks on downtime gate: either flag triggers the gate.
-        is_emergency = _is_emergency_shutdown()
-        if str(get_setting('DOWNTIME_ENABLED','0')) != '1' and not is_emergency:
-            # reset allowlist when downtime ends (but keep it during an emergency)
+        if str(get_setting('DOWNTIME_ENABLED','0')) != '1':
+            # reset allowlist when downtime ends ()
             try: _clear_downtime_ips()
-            except Exception: pass
+            except: pass
             return
         # Always allow unlock API, /smite, and static/media so admins can generate/use codes
         path = request.path or ''
@@ -2732,24 +2767,19 @@ def _downtime_gate():
         ip = _get_ip()
         if ip and _is_ip_allowed_during_downtime(ip):
             return
-        # Return downtime / emergency page
+        # Return downtime page
         reason = get_setting('DOWNTIME_REASON','') or ''
+        # Return downtime page
         if not reason:
-            # Ensure a row exists in app_settings so DB tools will show it
             reason = 'No reason provided'
             try:
                 set_setting('DOWNTIME_REASON', reason)
             except Exception:
                 pass
         reason_html = ("<div style='height:10px'></div><div class='reason'>Reason: " + reason + "</div>")
-        if is_emergency:
-            heading = 'Emergency shutdown in progress'
-            sub = 'An emergency maintenance is in progress. Please try again later.'
-        else:
-            heading = 'Chatter is temporarily unavailable'
-            sub = 'We are performing maintenance. Please check back later.'
+        heading = 'Chatter is temporarily unavailable'
+        sub = 'We are performing maintenance. Please check back later.'
         html = (
-            "<!doctype html>\n"
             "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>\n"
             "<title>Chatter Down</title>\n"
             "<style>body{margin:0;font-family:system-ui,Segoe UI,Arial;background:#0f172a;color:#e5e7eb;display:flex;align-items:center;justify-content:center;min-height:100vh} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;max-width:640px;margin:16px;box-shadow:0 10px 30px rgba(0,0,0,.3)} .muted{color:#9ca3af} .reason{white-space:pre-wrap;word-break:break-word} .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:10000} .modal>.box{background:#111827;border:1px solid #374151;border-radius:12px;padding:16px;max-width:360px;width:92%} .input{width:100%;padding:10px;border-radius:8px;border:1px solid #374151;background:#0b1020;color:#e5e7eb} .btn{padding:8px 10px;border-radius:8px;border:1px solid #374151;background:#2563eb;color:#fff}</style>\n"
@@ -3085,7 +3115,6 @@ def api_admin_toggles():
             # Group tools
             'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
             # Admin tools
-            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN',
             # Downtime & Alerts
             'DOWNTIME_ENABLED','DOWNTIME_REASON','ALERTS_ENABLED','ALERTS_TEXT',
             # Security
@@ -5461,12 +5490,6 @@ def api_admin_app_settings():
         'ADMIN_SYNC_PERMS',
         'ADMIN_VIEW_ACTIVE',
         'ADMIN_STEALTH_MODE',
-        'ADMIN_EMERGENCY_SHUTDOWN',
-        'ADMIN_SHOW_EMERGENCY_BLOCK',
-        # Emergency metadata (read-only status helpers)
-        'EMERGENCY_LAST_SNAPSHOT',
-        'EMERGENCY_RECOVERY_STAGE',
-        'EMERGENCY_LAST_TIME',
         # Security
         'SEC_STRICT_ASSOCIATED_BAN',
         'SEC_DEVICE_BAN_ON_LOGIN',
@@ -5942,154 +5965,6 @@ def api_admin_code():
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# EMERGENCY MANAGEMENT API ENDPOINTS
-# ============================================================================
-
-@app.route('/api/admin/emergency/trigger', methods=['POST'])
-def api_admin_emergency_trigger():
-    """Manually trigger emergency shutdown"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        data = request.get_json() or {}
-        trigger_source = data.get('trigger_source', 'manual_admin')
-        trigger_details = data.get('details', {})
-        
-        success = _trigger_emergency_shutdown(
-            trigger_source=trigger_source,
-            trigger_details=trigger_details,
-            actor=session['username']
-        )
-        
-        if success:
-            return jsonify({'success': True, 'message': 'Emergency shutdown triggered'})
-        else:
-            return jsonify({'error': 'Failed to trigger emergency shutdown'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/admin/emergency/status', methods=['GET'])
-def api_admin_emergency_status():
-    """Get comprehensive emergency system status"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        status = {
-            'emergency_active': _is_emergency_shutdown(),
-            'recovery_stage': emergency_system_state.get('recovery_stage', 'normal'),
-            'shutdown_trigger': emergency_system_state.get('shutdown_trigger'),
-            'shutdown_timestamp': emergency_system_state.get('shutdown_timestamp'),
-            'active_users_at_shutdown': emergency_system_state.get('active_users_at_shutdown', []),
-            'locked_users': list(emergency_system_state.get('locked_users', set())),
-            'current_metrics': _get_system_metrics(),
-            'resource_monitoring': emergency_system_state.get('resource_monitoring', {}),
-            'automatic_triggers_active': emergency_system_state.get('automatic_triggers_active', True),
-            'recent_actions': emergency_system_state.get('recent_actions_at_shutdown', [])[:10]  # Last 10 actions
-        }
-        
-        return jsonify(status)
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/admin/emergency/recovery/<stage>', methods=['POST'])
-def api_admin_emergency_recovery(stage):
-    """Execute staged recovery steps"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        valid_stages = ['stage1', 'stage2', 'stage3', 'complete']
-        if stage not in valid_stages:
-            return jsonify({'error': f'Invalid stage. Must be one of: {valid_stages}'}), 400
-        
-        success = _staged_recovery_step(stage, actor=session['username'])
-        
-        if success:
-            return jsonify({'success': True, 'message': f'Recovery {stage} executed'})
-        else:
-            return jsonify({'error': f'Failed to execute recovery {stage}'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/admin/emergency/lock_user', methods=['POST'])
-def api_admin_emergency_lock_user():
-    """Lock a specific user during emergency"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        data = request.get_json() or {}
-        target_user = data.get('username', '').strip()
-        reason = data.get('reason', 'Emergency lockdown')
-        
-        if not target_user:
-            return jsonify({'error': 'Username required'}), 400
-        
-        success = _lock_user_emergency(target_user, reason, actor=session['username'])
-        
-        if success:
-            return jsonify({'success': True, 'username': target_user})
-        else:
-            return jsonify({'error': 'Failed to lock user'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/admin/emergency/unlock_user', methods=['POST'])
-def api_admin_emergency_unlock_user():
-    """Unlock a specific user after emergency validation"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        data = request.get_json() or {}
-        target_user = data.get('username', '').strip()
-        
-        if not target_user:
-            return jsonify({'error': 'Username required'}), 400
-        
-        success = _unlock_user_emergency(target_user, actor=session['username'])
-        
-        if success:
-            return jsonify({'success': True, 'username': target_user})
-        else:
-            return jsonify({'error': 'Failed to unlock user'}), 500
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/admin/emergency/toggle_triggers', methods=['POST'])
-def api_admin_emergency_toggle_triggers():
-    """Enable/disable automatic emergency triggers"""
-    if not session.get('username') or not is_superadmin(session['username']):
-        return jsonify({'error': 'Unauthorized'}), 403
-    
-    try:
-        data = request.get_json() or {}
-        enabled = data.get('enabled', True)
-        
-        emergency_system_state['automatic_triggers_active'] = bool(enabled)
-        
-        _log_incident('automatic_triggers_toggled', {
-            'enabled': enabled,
-            'actor': session['username'],
-            'timestamp': time.time()
-        })
-        
-        return jsonify({
-            'success': True, 
-            'enabled': emergency_system_state['automatic_triggers_active'],
-            'message': f'Automatic triggers {"enabled" if enabled else "disabled"}'
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 def render_markdown(text: str) -> str:
     """Render markdown and sanitize HTML. Allow links and basic formatting only."""
     text = text or ""
@@ -7412,7 +7287,6 @@ def on_gdm_join(data):
 def on_gdm_send_v1(data):
     me = session.get('username')
     try:
-        if _emergency_write_block(me):
             return
     except Exception:
         pass
@@ -7662,7 +7536,6 @@ def on_gdm_send_v1(data):
 def on_gdm_edit(data):
     me = session.get('username')
     try:
-        if _emergency_write_block(me):
             return
     except Exception:
         pass
@@ -7674,7 +7547,6 @@ def on_gdm_edit(data):
     if not me or not mid:
         return
     try:
-        if _emergency_write_block(me):
             return
     except Exception:
         pass
@@ -7743,9 +7615,7 @@ def on_send_message(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new public messages for non-superadmins
     try:
-        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8403,7 +8273,6 @@ def on_disconnect():
 def on_delete_message(mid):
     username = session.get("username")
     try:
-        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8440,7 +8309,6 @@ def on_edit_message(data):
     if not username or not mid:
         return
     try:
-        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8475,7 +8343,6 @@ def on_dm_send(data):
     if not username:
         return
     try:
-        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -9013,34 +8880,23 @@ button:hover {
 }
 
 @media (max-width: 600px) {
-  /* Emergency Management Mobile Styles */
-  #admEmergencyCard {
-    padding: 8px !important;
-    margin: 8px 0 !important;
-  }
-  #admEmergencyCard h4 {
     font-size: 16px !important;
     margin-bottom: 8px !important;
   }
-  #admEmergencyCard button {
     font-size: 11px !important;
     padding: 6px 8px !important;
     margin: 2px !important;
     min-width: auto !important;
   }
-  #admEmergencyCard input {
     font-size: 12px !important;
     padding: 4px !important;
     margin: 2px 0 !important;
   }
-  #emergencyControls, #recoveryControls, #userLockControls {
     margin-bottom: 8px !important;
   }
-  #userLockControls > div {
     flex-direction: column !important;
     gap: 4px !important;
   }
-  #userLockControls input {
     min-width: auto !important;
     width: 100% !important;
   }
@@ -12094,43 +11950,6 @@ CHAT_HTML = """
                   <h4>Online Users & IPs</h4>
                   <div id='admOnline' style='display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:8px;max-height:220px;overflow-y:auto'></div>
                 </div>
-                <div id='admEmergencyCard' style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);display:none'>
-                  <h4>🚨 Emergency Management</h4>
-                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:8px;font-weight:bold'></div>
-                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280;margin-bottom:12px'></div>
-                  
-                  <!-- Emergency Controls -->
-                  <div id='emergencyControls' style='margin-bottom:12px'>
-                    <button id='btnTriggerEmergency' class='btn btn-danger' style='margin-right:8px;margin-bottom:4px'>🚨 Trigger Emergency</button>
-                    <button id='btnEmergencyStatus' class='btn btn-outline' style='margin-right:8px;margin-bottom:4px'>📊 Status</button>
-                    <button id='btnToggleTriggers' class='btn btn-outline' style='margin-bottom:4px'>⚙️ Toggle Auto-Triggers</button>
-                  </div>
-                  
-                  <!-- Recovery Controls -->
-                  <div id='recoveryControls' style='margin-bottom:12px;display:none'>
-                    <h5 style='margin:0 0 8px 0'>Staged Recovery</h5>
-                    <button id='btnRecoveryStage1' class='btn btn-warn' style='margin-right:4px;margin-bottom:4px;font-size:12px'>Stage 1</button>
-                    <button id='btnRecoveryStage2' class='btn btn-warn' style='margin-right:4px;margin-bottom:4px;font-size:12px'>Stage 2</button>
-                    <button id='btnRecoveryStage3' class='btn btn-warn' style='margin-right:4px;margin-bottom:4px;font-size:12px'>Stage 3</button>
-                    <button id='btnRecoveryComplete' class='btn btn-success' style='margin-bottom:4px;font-size:12px'>Complete</button>
-                  </div>
-                  
-                  <!-- User Management -->
-                  <div id='userLockControls' style='margin-bottom:8px'>
-                    <h5 style='margin:0 0 8px 0'>User Emergency Lock</h5>
-                    <div style='display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap'>
-                      <input id='lockUsername' placeholder='username' style='padding:4px;font-size:12px;flex:1;min-width:100px'>
-                      <input id='lockReason' placeholder='reason (optional)' style='padding:4px;font-size:12px;flex:1;min-width:120px'>
-                    </div>
-                    <button id='btnLockUser' class='btn btn-warn' style='margin-right:4px;font-size:12px'>🔒 Lock</button>
-                    <button id='btnUnlockUser' class='btn btn-outline' style='font-size:12px'>🔓 Unlock</button>
-                  </div>
-                  
-                  <!-- System Metrics -->
-                  <div id='systemMetrics' style='font-size:11px;color:#6b7280;border-top:1px dashed #e5e7eb;padding-top:8px'>
-                    <div id='metricsDisplay'>Loading metrics...</div>
-                  </div>
-                </div>
                 <div style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)'>
                   <h4>Banned IPs</h4>
                   <div id='admBIPs' style='font-size:14px;margin-bottom:8px'></div>
@@ -12380,8 +12199,6 @@ CHAT_HTML = """
                         <label><input type='checkbox' id='ADMIN_SYNC_PERMS'> Sync Permissions</label><br>
                         <label><input type='checkbox' id='ADMIN_VIEW_ACTIVE'> View Active Admins</label><br>
                         <label><input type='checkbox' id='ADMIN_STEALTH_MODE'> Stealth Mode</label><br>
-                        <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
-                        <label><input type='checkbox' id='ADMIN_SHOW_EMERGENCY_BLOCK'> Show Emergency Status (when offline)</label>
                         <div style='margin-top:8px;padding-top:6px;border-top:1px dashed #e5e7eb'>
                           <label style='display:inline-flex;gap:6px;align-items:center'><input type='checkbox' id='ALERTS_ENABLED'> On-screen Alert (bottom-left)</label>
                           <textarea id='ALERTS_TEXT' placeholder='Alert text' rows='2' style='width:100%;margin-top:6px'></textarea>
@@ -12511,192 +12328,26 @@ CHAT_HTML = """
                 const daysEl = box.querySelector('#MC_MESSAGE_LIFESPAN_DAYS');
                 if (daysEl && !daysEl.value) daysEl.value = String(s.MC_MESSAGE_LIFESPAN_DAYS||'0');
               } catch(e){}
-              // Emergency Status block: only show when emergency is on OR admin explicitly opted in
               try {
-                const emOn = get1('ADMIN_EMERGENCY_SHUTDOWN');
-                const showBlock = get1('ADMIN_SHOW_EMERGENCY_BLOCK');
-                const cardEl = box.querySelector('#admEmergencyCard');
-                const emStatusEl = box.querySelector('#admEmergencyStatus');
-                const emSnapEl = box.querySelector('#admEmergencySnapshot');
                 if (!cardEl) { /* nothing to do */ }
                 else if (!(emOn || showBlock)) {
                   cardEl.style.display = 'none';
                 } else {
                   cardEl.style.display = '';
                   if (emStatusEl) {
-                    emStatusEl.textContent = emOn ? 'Emergency shutdown: ACTIVE' : 'Emergency shutdown: inactive';
                   }
                   if (emSnapEl) {
-                    const snap = s.EMERGENCY_LAST_SNAPSHOT || '';
-        'EMERGENCY_RECOVERY_STAGE',
-                    const when = s.EMERGENCY_LAST_TIME || '';
                     if (snap || when) {
                       const parts = [];
                       if (when) parts.push(`Last snapshot: ${when}`);
                       if (snap) parts.push(snap);
                       emSnapEl.textContent = parts.join('  ');
                     } else {
-                      emSnapEl.textContent = 'No emergency snapshots recorded yet.';
                     }
                   }
                 }
               } catch(_){ }
 
-              // Enhanced Emergency Management Controls
-              try {
-                const cardEl = box.querySelector("#admEmergencyCard");
-                if (cardEl) {
-                  // Emergency control button handlers
-                  const btnTriggerEmergency = cardEl.querySelector("#btnTriggerEmergency");
-                  const btnEmergencyStatus = cardEl.querySelector("#btnEmergencyStatus");
-                  const btnToggleTriggers = cardEl.querySelector("#btnToggleTriggers");
-                  
-                  if (btnTriggerEmergency) {
-                    btnTriggerEmergency.onclick = () => {
-                      if (confirm("⚠️ This will immediately trigger emergency shutdown. Continue?")) {
-                        fetch("/api/admin/emergency/trigger", {
-                          method: "POST",
-                          headers: {"Content-Type": "application/json"},
-                          body: JSON.stringify({trigger_source: "manual_admin"})
-                        })
-                        .then(r => r.json())
-                        .then(data => {
-                          if (data.success) {
-                            alert("✅ Emergency shutdown triggered");
-                            location.reload();
-                          } else {
-                            alert("❌ Failed: " + (data.error || "Unknown error"));
-                          }
-                        })
-                        .catch(e => alert("❌ Error: " + e.message));
-                      }
-                    };
-                  }
-                  
-                  if (btnEmergencyStatus) {
-                    btnEmergencyStatus.onclick = () => {
-                      fetch("/api/admin/emergency/status")
-                        .then(r => r.json())
-                        .then(data => {
-                          const info = [
-                            `Emergency Active: ${data.emergency_active ? "YES" : "NO"}`,
-                            `Recovery Stage: ${data.recovery_stage || "normal"}`,
-                            `Trigger: ${data.shutdown_trigger || "none"}`,
-                            `Locked Users: ${(data.locked_users || []).length}`,
-                            `Auto-Triggers: ${data.automatic_triggers_active ? "ON" : "OFF"}`
-                          ];
-                          alert(info.join("\n"));
-                        })
-                        .catch(e => alert("❌ Error: " + e.message));
-                    };
-                  }
-                  
-                  if (btnToggleTriggers) {
-                    btnToggleTriggers.onclick = () => {
-                      const enable = confirm("Enable automatic emergency triggers?\n\nCancel = Disable triggers");
-                      fetch("/api/admin/emergency/toggle_triggers", {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({enabled: enable})
-                      })
-                      .then(r => r.json())
-                      .then(data => {
-                        if (data.success) {
-                          alert(`✅ Auto-triggers ${data.enabled ? "enabled" : "disabled"}`);
-                        } else {
-                          alert("❌ Failed: " + (data.error || "Unknown error"));
-                        }
-                      })
-                      .catch(e => alert("❌ Error: " + e.message));
-                    };
-                  }
-                  
-                  // Recovery stage button handlers
-                  ["Stage1", "Stage2", "Stage3", "Complete"].forEach(stage => {
-                    const btn = cardEl.querySelector(`#btnRecovery${stage}`);
-                    if (btn) {
-                      btn.onclick = () => {
-                        const stageKey = stage.toLowerCase();
-                        if (confirm(`Execute recovery ${stage}?`)) {
-                          fetch(`/api/admin/emergency/recovery/${stageKey}`, {method: "POST"})
-                            .then(r => r.json())
-                            .then(data => {
-                              if (data.success) {
-                                alert(`✅ Recovery ${stage} executed`);
-                                location.reload();
-                              } else {
-                                alert("❌ Failed: " + (data.error || "Unknown error"));
-                              }
-                            })
-                            .catch(e => alert("❌ Error: " + e.message));
-                        }
-                      };
-                    }
-                  });
-                  
-                  // User lock/unlock handlers
-                  const btnLockUser = cardEl.querySelector("#btnLockUser");
-                  const btnUnlockUser = cardEl.querySelector("#btnUnlockUser");
-                  const lockUsernameInput = cardEl.querySelector("#lockUsername");
-                  const lockReasonInput = cardEl.querySelector("#lockReason");
-                  
-                  if (btnLockUser && lockUsernameInput) {
-                    btnLockUser.onclick = () => {
-                      const username = lockUsernameInput.value.trim();
-                      const reason = lockReasonInput ? lockReasonInput.value.trim() : "";
-                      if (!username) {
-                        alert("Please enter a username");
-                        return;
-                      }
-                      if (confirm(`Lock user "${username}" during emergency?`)) {
-                        fetch("/api/admin/emergency/lock_user", {
-                          method: "POST",
-                          headers: {"Content-Type": "application/json"},
-                          body: JSON.stringify({username, reason: reason || "Emergency lockdown"})
-                        })
-                        .then(r => r.json())
-                        .then(data => {
-                          if (data.success) {
-                            alert(`✅ User ${username} locked`);
-                            lockUsernameInput.value = "";
-                            if (lockReasonInput) lockReasonInput.value = "";
-                          } else {
-                            alert("❌ Failed: " + (data.error || "Unknown error"));
-                          }
-                        })
-                        .catch(e => alert("❌ Error: " + e.message));
-                      }
-                    };
-                  }
-                  
-                  if (btnUnlockUser && lockUsernameInput) {
-                    btnUnlockUser.onclick = () => {
-                      const username = lockUsernameInput.value.trim();
-                      if (!username) {
-                        alert("Please enter a username");
-                        return;
-                      }
-                      if (confirm(`Unlock user "${username}"?`)) {
-                        fetch("/api/admin/emergency/unlock_user", {
-                          method: "POST",
-                          headers: {"Content-Type": "application/json"},
-                          body: JSON.stringify({username})
-                        })
-                        .then(r => r.json())
-                        .then(data => {
-                          if (data.success) {
-                            alert(`✅ User ${username} unlocked`);
-                            lockUsernameInput.value = "";
-                          } else {
-                            alert("❌ Failed: " + (data.error || "Unknown error"));
-                          }
-                        })
-                        .catch(e => alert("❌ Error: " + e.message));
-                      }
-                    };
-                  }
-                }
-              } catch(_){ }
             };
             render();
             // Danger tooltip for TRUE BAN PUBLIC IP toggle (shows after 2s hover)
@@ -12852,7 +12503,6 @@ CHAT_HTML = """
                       'UM_BAN_USER','UM_TIMEOUT_USER','UM_SEARCH_USER','UM_TEMP_BAN','UM_GLOBAL_WARNING','UM_SHADOW_BAN',
                       'MC_DELETE_MESSAGES','MC_EDIT_MESSAGES','MC_SEARCH_MESSAGES','MC_PURGE_CHANNEL','MC_PIN_MESSAGE','MC_BROADCAST_MESSAGE','MC_VIEW_HISTORY','MC_MESSAGE_LIFESPAN',
                       'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
-                      'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN'
                     ];
                     ids.forEach(id=>{ const el = box.querySelector('#'+id); if (el && 'checked' in el) el.checked = String(s[id]||'0')==='1'; });
                     const dr = box.querySelector('#DOWNTIME_REASON'); if (dr) dr.value = s.DOWNTIME_REASON || '';
@@ -12961,7 +12611,6 @@ CHAT_HTML = """
                     'UM_BAN_USER','UM_TIMEOUT_USER','UM_SEARCH_USER','UM_TEMP_BAN','UM_GLOBAL_WARNING','UM_SHADOW_BAN',
                     'MC_DELETE_MESSAGES','MC_EDIT_MESSAGES','MC_SEARCH_MESSAGES','MC_PURGE_CHANNEL','MC_PIN_MESSAGE','MC_BROADCAST_MESSAGE','MC_VIEW_HISTORY','MC_MESSAGE_LIFESPAN',
                     'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
-                    'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN',
                     'DOWNTIME_ENABLED','ALERTS_ENABLED'
                   ];
                   ids.forEach(id=>{ const el = box.querySelector('#'+id); if (el && 'checked' in el) payload[id] = el.checked? '1':'0'; });

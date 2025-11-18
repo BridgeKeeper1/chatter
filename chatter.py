@@ -5900,6 +5900,47 @@ def api_admin_ban():
 
 @app.route('/api/admin/code', methods=['GET', 'POST'])
 @login_required
+def api_admin_code():
+    me = session.get('username')
+    if not is_superadmin(me):
+        return jsonify({'error': 'forbidden'}), 403
+    if request.method == 'GET':
+        try:
+            with open(__file__, 'r', encoding='utf-8') as f:
+                return jsonify({'content': f.read()})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    # POST -> save (optionally restart atomically in background)
+    data = request.get_json(silent=True) or {}
+    content = data.get('content')
+    restart = bool(data.get('restart', True))
+    if content is None:
+        return jsonify({'error': 'no content'}), 400
+    if len(content) > 5000000:
+        return jsonify({'error': 'too large'}), 400
+    # Background task to write atomically and restart, so this request can finish before
+    def _write_and_maybe_restart(text: str, do_restart: bool):
+        try:
+            path = __file__
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(text)
+            os.replace(tmp, path)  # atomic replace on same filesystem
+            if do_restart:
+                time.sleep(0.6)
+                try:
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                except Exception:
+                    os._exit(3)
+        except Exception:
+            # best-effort; cannot report error after response
+            pass
+    try:
+        threading.Thread(target=_write_and_maybe_restart, args=(content, restart), daemon=True).start()
+        return jsonify({'ok': True, 'scheduled_restart': restart})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ============================================================================
 # EMERGENCY MANAGEMENT API ENDPOINTS
 # ============================================================================
@@ -5992,16 +6033,16 @@ def api_admin_emergency_lock_user():
         success = _lock_user_emergency(target_user, reason, actor=session['username'])
         
         if success:
-            return jsonify({'success': True, 'message': f'User {target_user} locked'})
+            return jsonify({'success': True, 'username': target_user})
         else:
-            return jsonify({'error': f'Failed to lock user {target_user}'}), 500
+            return jsonify({'error': 'Failed to lock user'}), 500
             
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/emergency/unlock_user', methods=['POST'])
 def api_admin_emergency_unlock_user():
-    """Unlock a specific user during emergency"""
+    """Unlock a specific user after emergency validation"""
     if not session.get('username') or not is_superadmin(session['username']):
         return jsonify({'error': 'Unauthorized'}), 403
     
@@ -6015,16 +6056,16 @@ def api_admin_emergency_unlock_user():
         success = _unlock_user_emergency(target_user, actor=session['username'])
         
         if success:
-            return jsonify({'success': True, 'message': f'User {target_user} unlocked'})
+            return jsonify({'success': True, 'username': target_user})
         else:
-            return jsonify({'error': f'Failed to unlock user {target_user}'}), 500
+            return jsonify({'error': 'Failed to unlock user'}), 500
             
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/emergency/toggle_triggers', methods=['POST'])
 def api_admin_emergency_toggle_triggers():
-    """Toggle automatic emergency triggers on/off"""
+    """Enable/disable automatic emergency triggers"""
     if not session.get('username') or not is_superadmin(session['username']):
         return jsonify({'error': 'Unauthorized'}), 403
     
@@ -6034,7 +6075,7 @@ def api_admin_emergency_toggle_triggers():
         
         emergency_system_state['automatic_triggers_active'] = bool(enabled)
         
-        _log_incident('emergency_triggers_toggled', {
+        _log_incident('automatic_triggers_toggled', {
             'enabled': enabled,
             'actor': session['username'],
             'timestamp': time.time()
@@ -6042,51 +6083,10 @@ def api_admin_emergency_toggle_triggers():
         
         return jsonify({
             'success': True, 
-            'message': f'Automatic triggers {"enabled" if enabled else "disabled"}',
-            'enabled': enabled
+            'enabled': emergency_system_state['automatic_triggers_active'],
+            'message': f'Automatic triggers {"enabled" if enabled else "disabled"}'
         })
         
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-def api_admin_code():
-    me = session.get('username')
-    if not is_superadmin(me):
-        return jsonify({'error': 'forbidden'}), 403
-    if request.method == 'GET':
-        try:
-            with open(__file__, 'r', encoding='utf-8') as f:
-                return jsonify({'content': f.read()})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    # POST -> save (optionally restart atomically in background)
-    data = request.get_json(silent=True) or {}
-    content = data.get('content')
-    restart = bool(data.get('restart', True))
-    if content is None:
-        return jsonify({'error': 'no content'}), 400
-    if len(content) > 5000000:
-        return jsonify({'error': 'too large'}), 400
-    # Background task to write atomically and restart, so this request can finish before
-    def _write_and_maybe_restart(text: str, do_restart: bool):
-        try:
-            path = __file__
-            tmp = path + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as f:
-                f.write(text)
-            os.replace(tmp, path)  # atomic replace on same filesystem
-            if do_restart:
-                time.sleep(0.6)
-                try:
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
-                except Exception:
-                    os._exit(3)
-        except Exception:
-            # best-effort; cannot report error after response
-            pass
-    try:
-        threading.Thread(target=_write_and_maybe_restart, args=(content, restart), daemon=True).start()
-        return jsonify({'ok': True, 'scheduled_restart': restart})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

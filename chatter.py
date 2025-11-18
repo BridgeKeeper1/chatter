@@ -50,6 +50,8 @@ import bleach
 import secrets
 import string
 import requests
+import difflib
+import zlib
 
 SUPPORTED_LANGUAGES = [
     ("en", "English"),
@@ -229,20 +231,6 @@ def _seed_defaults_if_needed():
             except Exception:
                 pass
         try:
-            spam_defaults = {
-                'SPAM_MAX_CHARS': '1000',
-                'SPAM_MAX_BYTES': '4000',
-                'SPAM_WINDOW_SECONDS': '10',
-                'SPAM_MIN_GAP_SECONDS': '0.7',
-                'SPAM_MAX_PER_WINDOW': '8',
-                'SPAM_SLOW_SECONDS': '10',
-                'SPAM_SENSITIVITY': '1.0',
-            }
-            for sk, sv in spam_defaults.items():
-                try:
-                    set_setting(sk, sv)
-                except Exception:
-                    pass
             set_setting('DEFAULTS_SEEDED', '1')
         except Exception:
             pass
@@ -1700,197 +1688,437 @@ connected_sockets = {}  # Track connected sockets for better message delivery
 typing_users = {}  # username -> expiry timestamp
 voice_channels = defaultdict(set)  # channel -> set(usernames)
 
-# Simple anti-spam tracking (timestamps in seconds)
-spam_public = defaultdict(list)  # username -> [ts,...]
-spam_dm = defaultdict(list)      # username -> [ts,...]
-spam_gdm = defaultdict(list)     # username -> [ts,...]
+# ============================================================================
+# COMPREHENSIVE ANTI-SPAM SYSTEM
+# ============================================================================
 
-# Extended anti-spam state for content-based checks and progressive sanctions
-spam_recent_public = defaultdict(list)  # username -> [(ts, norm_text)]
-spam_recent_dm = defaultdict(list)
-spam_recent_gdm = defaultdict(list)
-spam_strikes = defaultdict(lambda: {'count': 0.0, 'ts': 0.0})  # username -> {count, ts}
-spam_slow_until = defaultdict(float)   # username -> unix timestamp until slow-mode expires
-spam_block_until = defaultdict(float)  # username -> unix timestamp until hard block expires
+# Anti-spam tracking data structures
+antispam_user_data = defaultdict(lambda: {
+    'message_history': [],  # [(timestamp, channel_type), ...]
+    'content_hashes': [],   # [(timestamp, content_hash), ...]
+    'recent_messages': [],  # [(timestamp, normalized_content, channel_type), ...]
+    'violation_count': 0,
+    'violation_timestamp': 0,
+    'slow_mode_until': 0,
+    'block_until': 0,
+    'last_message_time': 0,
+    'consecutive_large_messages': 0,
+    'pattern_violations': 0
+})
 
-def _spam_record_strike(user: str, severity: float = 1.0) -> None:
+# Anti-spam configuration with defaults
+ANTISPAM_CONFIG = {
+    'MAX_MESSAGE_LENGTH': 1000,
+    'MAX_MESSAGE_BYTES': 4000,
+    'RATE_LIMIT_WINDOW': 10.0,
+    'RATE_LIMIT_MAX_MESSAGES': 8,
+    'MIN_MESSAGE_GAP': 0.7,
+    'DUPLICATE_WINDOW': 60.0,
+    'SIMILARITY_THRESHOLD': 0.85,
+    'SLOW_MODE_DURATION': 10.0,
+    'BLOCK_DURATION_SHORT': 30.0,
+    'BLOCK_DURATION_LONG': 300.0,
+    'VIOLATION_DECAY_TIME': 300.0,
+    'AUTO_SPLIT_THRESHOLD': 500,
+    'AUTO_SPLIT_MAX_PARTS': 5,
+    'PATTERN_HTML_TAG_LIMIT': 10,
+    'PATTERN_BR_TAG_LIMIT': 20,
+    'PATTERN_NEWLINE_LIMIT': 50,
+    'PATTERN_WHITESPACE_RATIO': 0.7
+}
+
+def _load_antispam_config():
+    """Load anti-spam configuration from settings with fallbacks"""
+    config = ANTISPAM_CONFIG.copy()
     try:
-        if not user:
-            return
+        config['MAX_MESSAGE_LENGTH'] = int(get_setting('ANTISPAM_MAX_LENGTH', str(config['MAX_MESSAGE_LENGTH'])))
+        config['MAX_MESSAGE_BYTES'] = int(get_setting('ANTISPAM_MAX_BYTES', str(config['MAX_MESSAGE_BYTES'])))
+        config['RATE_LIMIT_WINDOW'] = float(get_setting('ANTISPAM_RATE_WINDOW', str(config['RATE_LIMIT_WINDOW'])))
+        config['RATE_LIMIT_MAX_MESSAGES'] = int(get_setting('ANTISPAM_RATE_MAX', str(config['RATE_LIMIT_MAX_MESSAGES'])))
+        config['MIN_MESSAGE_GAP'] = float(get_setting('ANTISPAM_MIN_GAP', str(config['MIN_MESSAGE_GAP'])))
+        config['SLOW_MODE_DURATION'] = float(get_setting('ANTISPAM_SLOW_DURATION', str(config['SLOW_MODE_DURATION'])))
+    except Exception:
+        pass
+    return config
+
+def _normalize_content(text):
+    """Normalize text content for comparison, avoiding over-normalization"""
+    if not text:
+        return ""
+    
+    # Basic normalization - preserve structure but normalize whitespace
+    normalized = ' '.join(text.strip().split())
+    
+    # Don't normalize single characters or very short messages to avoid blocking common letters
+    if len(normalized) <= 3:
+        return normalized
+    
+    return normalized.lower()
+
+def _generate_content_hash(content):
+    """Generate a hash for content deduplication"""
+    if not content:
+        return ""
+    normalized = _normalize_content(content)
+    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+def _check_message_length(content, config):
+    """Check if message exceeds length limits"""
+    if not content:
+        return True, None
+    
+    char_count = len(content)
+    byte_count = len(content.encode('utf-8'))
+    
+    if char_count > config['MAX_MESSAGE_LENGTH']:
+        return False, f"Message too long ({char_count} characters). Maximum allowed: {config['MAX_MESSAGE_LENGTH']} characters."
+    
+    if byte_count > config['MAX_MESSAGE_BYTES']:
+        return False, f"Message too large ({byte_count} bytes). Maximum allowed: {config['MAX_MESSAGE_BYTES']} bytes."
+    
+    return True, None
+
+def _check_payload_size(content, config):
+    """Check payload size using compression to detect encoded spam"""
+    if not content or len(content) < 200:
+        return True, None
+    
+    try:
+        # Compress content to detect large encoded payloads
+        compressed = zlib.compress(content.encode('utf-8'), level=3)
+        if len(compressed) > config['MAX_MESSAGE_BYTES']:
+            return False, "Message appears to contain large encoded data. Please send as a file instead."
+    except Exception:
+        pass
+    
+    return True, None
+
+def _check_rate_limiting(username, channel_type, config):
+    """Check if user is sending messages too quickly"""
+    user_data = antispam_user_data[username]
+    now = time.time()
+    
+    # Clean old history
+    window = config['RATE_LIMIT_WINDOW']
+    user_data['message_history'] = [
+        (ts, ch) for ts, ch in user_data['message_history'] 
+        if now - ts <= window
+    ]
+    
+    # Check minimum gap between messages
+    if user_data['last_message_time'] and (now - user_data['last_message_time']) < config['MIN_MESSAGE_GAP']:
+        return False, f"Please wait {config['MIN_MESSAGE_GAP']} seconds between messages."
+    
+    # Check maximum messages per window
+    recent_count = len(user_data['message_history'])
+    if recent_count >= config['RATE_LIMIT_MAX_MESSAGES']:
+        return False, f"Too many messages in {window} seconds. Please slow down."
+    
+    return True, None
+
+def _check_duplicate_content(username, content, channel_type, config):
+    """Check for duplicate or near-duplicate content"""
+    if not content or len(content) <= 10:  # Skip very short messages
+        return True, None
+    
+    user_data = antispam_user_data[username]
+    now = time.time()
+    normalized = _normalize_content(content)
+    
+    # Clean old content history
+    window = config['DUPLICATE_WINDOW']
+    user_data['recent_messages'] = [
+        (ts, msg, ch) for ts, msg, ch in user_data['recent_messages']
+        if now - ts <= window
+    ]
+    
+    # Check for exact duplicates
+    for ts, prev_content, prev_channel in user_data['recent_messages']:
+        if normalized == prev_content:
+            return False, "Duplicate message detected. Please avoid repeating the same content."
+    
+    # Check for near-duplicates (only for longer messages to avoid false positives)
+    if len(normalized) >= 20:
+        for ts, prev_content, prev_channel in user_data['recent_messages']:
+            if len(prev_content) >= 20:
+                try:
+                    similarity = difflib.SequenceMatcher(None, normalized, prev_content).ratio()
+                    if similarity > config['SIMILARITY_THRESHOLD']:
+                        return False, "Very similar message detected. Please avoid minor variations of the same content."
+                except Exception:
+                    pass
+    
+    return True, None
+
+def _check_content_patterns(content, config):
+    """Analyze content for suspicious patterns"""
+    if not content:
+        return True, None
+    
+    lower_content = content.lower()
+    
+    # Check for HTML/script injection patterns
+    html_tags = ['<div', '<script', '<style', '<html', '<body', '<iframe', '<object', '<embed']
+    tag_count = sum(lower_content.count(tag) for tag in html_tags)
+    
+    if tag_count >= config['PATTERN_HTML_TAG_LIMIT']:
+        return False, "Message contains too many HTML tags. Please send as a file or remove HTML content."
+    
+    # Check for excessive line breaks
+    br_count = lower_content.count('<br')
+    newline_count = content.count('\n')
+    
+    if br_count >= config['PATTERN_BR_TAG_LIMIT'] or newline_count >= config['PATTERN_NEWLINE_LIMIT']:
+        return False, "Message contains excessive line breaks. Please format your content more concisely."
+    
+    # Check for excessive whitespace (but not single character repetition)
+    if len(content) > 50:  # Only check longer messages
+        whitespace_count = sum(1 for c in content if c.isspace())
+        whitespace_ratio = whitespace_count / len(content)
+        
+        if whitespace_ratio > config['PATTERN_WHITESPACE_RATIO']:
+            return False, "Message contains excessive whitespace. Please format your content properly."
+    
+    return True, None
+
+def _auto_split_message(content, config):
+    """Automatically split large messages if appropriate"""
+    if not content or len(content) <= config['AUTO_SPLIT_THRESHOLD']:
+        return [content] if content else []
+    
+    # Try to split by paragraphs first
+    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+    if len(paragraphs) > 1 and len(paragraphs) <= config['AUTO_SPLIT_MAX_PARTS']:
+        # Check if each part is reasonable size
+        if all(len(p) <= config['MAX_MESSAGE_LENGTH'] for p in paragraphs):
+            return paragraphs
+    
+    # Try to split by sentences
+    sentences = [s.strip() + '.' for s in content.split('.') if s.strip()]
+    if len(sentences) > 1 and len(sentences) <= config['AUTO_SPLIT_MAX_PARTS']:
+        if all(len(s) <= config['MAX_MESSAGE_LENGTH'] for s in sentences):
+            return sentences
+    
+    # Try to split by lines
+    lines = [line.strip() for line in content.split('\n') if line.strip()]
+    if len(lines) > 1 and len(lines) <= config['AUTO_SPLIT_MAX_PARTS']:
+        if all(len(line) <= config['MAX_MESSAGE_LENGTH'] for line in lines):
+            return lines
+    
+    # If can't split reasonably, return as single message (will be rejected by length check)
+    return [content]
+
+def _apply_progressive_sanctions(username, violation_type, config):
+    """Apply progressive sanctions based on violation history"""
+    user_data = antispam_user_data[username]
+    now = time.time()
+    
+    # Decay old violations
+    if user_data['violation_timestamp'] and (now - user_data['violation_timestamp']) > config['VIOLATION_DECAY_TIME']:
+        user_data['violation_count'] = max(0, user_data['violation_count'] - 1)
+    
+    # Record new violation
+    user_data['violation_count'] += 1
+    user_data['violation_timestamp'] = now
+    
+    violation_count = user_data['violation_count']
+    
+    if violation_count >= 3:
+        # Third violation: Temporary block
+        user_data['block_until'] = now + config['BLOCK_DURATION_LONG']
+        return False, f"You have been temporarily blocked for {config['BLOCK_DURATION_LONG']/60:.1f} minutes due to repeated violations."
+    elif violation_count >= 2:
+        # Second violation: Slow mode
+        user_data['slow_mode_until'] = now + config['SLOW_MODE_DURATION']
+        return False, f"Slow mode enabled for {config['SLOW_MODE_DURATION']} seconds. Please wait before sending another message."
+    else:
+        # First violation: Warning
+        return False, f"Warning: Please follow the chat guidelines. Further violations may result in restrictions."
+
+def _check_user_restrictions(username, config):
+    """Check if user is currently under restrictions"""
+    user_data = antispam_user_data[username]
+    now = time.time()
+    
+    # Check temporary block
+    if user_data['block_until'] > now:
+        remaining = int(user_data['block_until'] - now)
+        return False, f"You are temporarily blocked. Time remaining: {remaining} seconds."
+    elif user_data['block_until'] > 0:
+        user_data['block_until'] = 0  # Clear expired block
+    
+    # Check slow mode
+    if user_data['slow_mode_until'] > now:
+        remaining = int(user_data['slow_mode_until'] - now)
+        return False, f"Slow mode active. Please wait {remaining} seconds before sending another message."
+    elif user_data['slow_mode_until'] > 0:
+        user_data['slow_mode_until'] = 0  # Clear expired slow mode
+    
+    return True, None
+
+def antispam_check_message(username, content, channel_type='public', has_attachment=False):
+    """
+    Main anti-spam checking function that coordinates all checks
+    
+    Args:
+        username: Username of the sender
+        content: Message content to check
+        channel_type: Type of channel ('public', 'dm', 'gdm')
+        has_attachment: Whether message has an attachment
+    
+    Returns:
+        tuple: (allowed: bool, message: str or None, split_parts: list or None)
+    """
+    try:
+        # Superadmins bypass all checks
+        if username in SUPERADMINS:
+            return True, None, None
+        
+        if not username:
+            return False, "Invalid user.", None
+        
+        config = _load_antispam_config()
         now = time.time()
-        try:
-            slow_seconds = float(get_setting('SPAM_SLOW_SECONDS','10') or 10.0)
-        except Exception:
-            slow_seconds = 10.0
-        if slow_seconds < 1.0:
-            slow_seconds = 1.0
-        elif slow_seconds > 120.0:
-            slow_seconds = 120.0
-        block_short = max(30.0, slow_seconds * 6.0)
-        block_long = max(60.0, slow_seconds * 30.0)
-        st = spam_strikes[user]
-        last_ts = float(st.get('ts') or 0.0)
-        # Decay old strikes after ~5 minutes
-        if last_ts and (now - last_ts) > 300.0:
-            st['count'] = 0.0
-        st['count'] = float(st.get('count') or 0.0) + float(severity)
-        st['ts'] = now
-        c = float(st.get('count') or 0.0)
-        # Escalate: strikes drive slow-mode and temporary blocks
-        if c >= 4.0:
-            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_long)
-        elif c >= 3.0:
-            spam_block_until[user] = max(float(spam_block_until.get(user) or 0.0), now + block_short)
-        elif c >= 2.0:
-            spam_slow_until[user] = max(float(spam_slow_until.get(user) or 0.0), now + slow_seconds)
+        
+        # Check user restrictions first
+        allowed, msg = _check_user_restrictions(username, config)
+        if not allowed:
+            return False, msg, None
+        
+        # For attachment-only messages, only apply rate limiting
+        if not content and has_attachment:
+            allowed, msg = _check_rate_limiting(username, channel_type, config)
+            if not allowed:
+                _apply_progressive_sanctions(username, 'rate_limit', config)
+                return False, msg, None
+            
+            # Update tracking
+            user_data = antispam_user_data[username]
+            user_data['message_history'].append((now, channel_type))
+            user_data['last_message_time'] = now
+            return True, None, None
+        
+        if not content:
+            return True, None, None
+        
+        # 1. Message Length Limits
+        allowed, msg = _check_message_length(content, config)
+        if not allowed:
+            # Try auto-splitting for large messages
+            split_parts = _auto_split_message(content, config)
+            if len(split_parts) > 1 and len(split_parts) <= config['AUTO_SPLIT_MAX_PARTS']:
+                # Check if all parts are valid
+                all_valid = True
+                for part in split_parts:
+                    part_allowed, _ = _check_message_length(part, config)
+                    if not part_allowed:
+                        all_valid = False
+                        break
+                
+                if all_valid:
+                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
+            
+            _apply_progressive_sanctions(username, 'length', config)
+            return False, msg, None
+        
+        # 2. Payload Size Monitoring
+        allowed, msg = _check_payload_size(content, config)
+        if not allowed:
+            _apply_progressive_sanctions(username, 'payload', config)
+            return False, msg, None
+        
+        # 3. Rate Limiting
+        allowed, msg = _check_rate_limiting(username, channel_type, config)
+        if not allowed:
+            _apply_progressive_sanctions(username, 'rate_limit', config)
+            return False, msg, None
+        
+        # 4. Duplicate Detection
+        allowed, msg = _check_duplicate_content(username, content, channel_type, config)
+        if not allowed:
+            _apply_progressive_sanctions(username, 'duplicate', config)
+            return False, msg, None
+        
+        # 5. Content Pattern Analysis
+        allowed, msg = _check_content_patterns(content, config)
+        if not allowed:
+            _apply_progressive_sanctions(username, 'pattern', config)
+            return False, msg, None
+        
+        # All checks passed - update tracking data
+        user_data = antispam_user_data[username]
+        user_data['message_history'].append((now, channel_type))
+        user_data['recent_messages'].append((now, _normalize_content(content), channel_type))
+        user_data['content_hashes'].append((now, _generate_content_hash(content)))
+        user_data['last_message_time'] = now
+        
+        # Clean up old data to prevent memory leaks
+        window = max(config['RATE_LIMIT_WINDOW'], config['DUPLICATE_WINDOW'])
+        user_data['message_history'] = [(ts, ch) for ts, ch in user_data['message_history'] if now - ts <= window]
+        user_data['recent_messages'] = [(ts, msg, ch) for ts, msg, ch in user_data['recent_messages'] if now - ts <= window]
+        user_data['content_hashes'] = [(ts, h) for ts, h in user_data['content_hashes'] if now - ts <= window]
+        
+        return True, None, None
+        
+    except Exception as e:
+        # Fail open on unexpected errors to avoid breaking chat
+        return True, None, None
+
+def antispam_get_user_status(username):
+    """Get current anti-spam status for a user"""
+    try:
+        if username in SUPERADMINS:
+            return {"status": "superadmin", "restrictions": None}
+        
+        user_data = antispam_user_data[username]
+        now = time.time()
+        
+        status = {"status": "normal", "restrictions": []}
+        
+        if user_data['block_until'] > now:
+            remaining = int(user_data['block_until'] - now)
+            status["status"] = "blocked"
+            status["restrictions"].append(f"Blocked for {remaining} seconds")
+        
+        if user_data['slow_mode_until'] > now:
+            remaining = int(user_data['slow_mode_until'] - now)
+            if status["status"] == "normal":
+                status["status"] = "slow_mode"
+            status["restrictions"].append(f"Slow mode for {remaining} seconds")
+        
+        if user_data['violation_count'] > 0:
+            status["violation_count"] = user_data['violation_count']
+        
+        return status
+    except Exception:
+        return {"status": "unknown", "restrictions": None}
+
+# Initialize anti-spam defaults in settings
+def _init_antispam_settings():
+    """Initialize anti-spam settings with defaults"""
+    try:
+        defaults = {
+            'ANTISPAM_MAX_LENGTH': '1000',
+            'ANTISPAM_MAX_BYTES': '4000',
+            'ANTISPAM_RATE_WINDOW': '10.0',
+            'ANTISPAM_RATE_MAX': '8',
+            'ANTISPAM_MIN_GAP': '0.7',
+            'ANTISPAM_SLOW_DURATION': '10.0',
+        }
+        
+        for key, value in defaults.items():
+            if not get_setting(key):
+                set_setting(key, value)
     except Exception:
         pass
 
-def _spam_gate_and_update(kind: str, username: str, text: str, *, has_attachment: bool = False):
-    try:
-        if not username:
-            return True, None
-        # Superadmins bypass spam gates to avoid accidental lockouts
-        try:
-            if username in SUPERADMINS:
-                return True, None
-        except Exception:
-            pass
+# Initialize settings on module load
+_init_antispam_settings()
 
-        now = time.time()
+# ============================================================================
+# END ANTI-SPAM SYSTEM
+# ============================================================================
 
-        # Load configurable thresholds with safe fallbacks
-        try:
-            max_chars = int(get_setting('SPAM_MAX_CHARS', '1000') or 1000)
-        except Exception:
-            max_chars = 1000
-        try:
-            max_bytes = int(get_setting('SPAM_MAX_BYTES', '4000') or 4000)
-        except Exception:
-            max_bytes = 4000
-        try:
-            rate_window = float(get_setting('SPAM_WINDOW_SECONDS', '10') or 10.0)
-        except Exception:
-            rate_window = 10.0
-        try:
-            min_gap = float(get_setting('SPAM_MIN_GAP_SECONDS', '0.7') or 0.7)
-        except Exception:
-            min_gap = 0.7
-        try:
-            max_per_window = int(get_setting('SPAM_MAX_PER_WINDOW', '8') or 8)
-        except Exception:
-            max_per_window = 8
-        try:
-            sensitivity = float(get_setting('SPAM_SENSITIVITY', '1.0') or 1.0)
-        except Exception:
-            sensitivity = 1.0
-        if sensitivity < 0.25:
-            sensitivity = 0.25
-        elif sensitivity > 3.0:
-            sensitivity = 3.0
-
-        # Hard block gate (user fully blocked for a short period)
-        try:
-            block_until = float(spam_block_until.get(username) or 0.0)
-        except Exception:
-            block_until = 0.0
-        if block_until:
-            if now < block_until:
-                return False, "You are temporarily blocked from sending messages due to spam-like activity."
-            # Expired
-            spam_block_until.pop(username, None)
-
-        # Slow mode gate (per-user, any channel)
-        try:
-            slow_until = float(spam_slow_until.get(username) or 0.0)
-        except Exception:
-            slow_until = 0.0
-        if slow_until and now < slow_until:
-            return False, "Slow mode is enabled for you. Please wait a few seconds before sending another message."
-        if slow_until and now >= slow_until:
-            spam_slow_until.pop(username, None)
-
-        # Choose per-channel history and recent text buffers
-        if kind == 'dm':
-            hist = spam_dm[username]
-            recent = spam_recent_dm[username]
-        elif kind == 'gdm':
-            hist = spam_gdm[username]
-            recent = spam_recent_gdm[username]
-        else:
-            hist = spam_public[username]
-            recent = spam_recent_public[username]
-
-        # Baseline rate limit: ~1 msg / min_gap, max ~max_per_window msgs / rate_window
-        window = rate_window
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and ((now - hist[-1]) < min_gap or len(hist) >= max_per_window):
-            base_sev = 1.5 if len(hist) >= max_per_window else 1.0
-            _spam_record_strike(username, severity=base_sev * sensitivity)
-            return False, "You are sending messages too quickly; please slow down."
-        hist.append(now)
-
-        # Trim and normalise text for further checks
-        raw = (text or '').strip()
-        if raw:
-            # Message length / payload size limits (server-side backstop).
-            try:
-                if len(raw) > max_chars or len(raw.encode('utf-8')) > max_bytes:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it."
-            except Exception:
-                if len(raw) > max_chars:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "This message is too large. Please shorten it."
-
-            # Compression-based payload check: catch large encoded/base64-style blobs
-            try:
-                if len(raw) > 200:
-                    raw_bytes = raw.encode('utf-8', errors='ignore')
-                    comp = zlib.compress(raw_bytes, level=3)
-                    if len(comp) > max_bytes:
-                        _spam_record_strike(username, severity=1.0 * sensitivity)
-                        return False, "This message looks like a large encoded payload. Please send it as a file instead of pasting it."
-            except Exception:
-                pass
-
-            # Content pattern analysis: HTML dumps / excessive breaks / giant walls
-            lower = raw.lower()
-            try:
-                tag_hits = sum(lower.count(tag) for tag in ('<div', '<script', '<style', '<html', '<body'))
-            except Exception:
-                tag_hits = 0
-            br_hits = lower.count('<br') if '<' in lower else 0
-            newline_hits = raw.count('\n')
-            if tag_hits >= 10 or br_hits >= 20 or newline_hits >= 80:
-                _spam_record_strike(username, severity=1.0 * sensitivity)
-                return False, "Large HTML/code dumps are not allowed. Please send files or smaller snippets."
-
-            # Duplicate / near-duplicate detection in the last 60 seconds
-            recent_window = 60.0
-            recent[:] = [(ts, txt) for (ts, txt) in recent if now - ts <= recent_window]
-            norm = ' '.join(raw.split())  # collapse whitespace
-            for ts, prev in recent:
-                if not prev:
-                    continue
-                if norm == prev:
-                    _spam_record_strike(username, severity=1.0 * sensitivity)
-                    return False, "Duplicate message detected. Please avoid sending the same content repeatedly."
-                try:
-                    if len(norm) >= 40 and len(prev) >= 40:
-                        ratio = difflib.SequenceMatcher(None, norm, prev).ratio()
-                        if ratio > 0.97:
-                            _spam_record_strike(username, severity=0.7 * sensitivity)
-                            return False, "Very similar message detected. Please avoid minor variations of the same content."
-                except Exception:
-                    pass
-            recent.append((now, norm))
-
-        # For attachment-only messages, we still rely on rate limiting above.
-        return True, None
-    except Exception:
-        # Fail open on unexpected errors to avoid breaking chat
-        return True, None
 
 # Socket.IO connection management
 @socketio.on('connect')
@@ -6736,21 +6964,6 @@ def on_gdm_send_v1(data):
         tid = int((data or {}).get('thread_id', 0))
     except Exception:
         tid = 0
-    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
-    try:
-        now = time.time()
-        window = 10.0
-        hist = spam_gdm[me]
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
-            try:
-                emit("system_message", "You are sending messages too quickly", room=f'user:{me}')
-            except Exception:
-                pass
-            return
-        hist.append(now)
-    except Exception:
-        pass
     # Platform gates
     try:
         if get_setting('MAINTENANCE_MODE','0')=='1':
@@ -6883,6 +7096,52 @@ def on_gdm_send_v1(data):
                 emit('system_message', "Attachment failed to upload (invalid or too large)", room=f'user:{me}')
             except Exception:
                 pass
+    # Anti-spam check
+    has_attachment = bool(attachment)
+    allowed, spam_msg, split_parts = antispam_check_message(me, text, "gdm", has_attachment)
+    if not allowed:
+        try:
+            emit("system_message", spam_msg, room=f"user:{me}")
+        except Exception:
+            pass
+        return
+    
+    # Handle message splitting if needed
+    if split_parts and len(split_parts) > 1:
+        try:
+            emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{me}")
+        except Exception:
+            pass
+        
+        # Send each part with rate limiting
+        for i, part in enumerate(split_parts):
+            if i > 0:
+                time.sleep(1.0)  # Rate limit between parts
+            
+            safe_part = render_markdown(part)
+            cur.execute("INSERT INTO group_messages (thread_id, username, text, attachment, created_at, edited, reply_to) VALUES (?,?,?,?,?,0,?)", (tid, me, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
+            msg_id = cur.lastrowid
+            get_db().commit()
+            
+            # Send to all members
+            cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
+            members = [r[0] for r in cur.fetchall()]
+            payload = {
+                "id": msg_id,
+                "username": me,
+                "text": safe_part,
+                "attachment": attachment if i == 0 else None,
+                "created_at": to_ny_time(datetime.utcnow()),
+                "avatar": f"/avatar/{me}",
+                "thread_id": tid,
+                "reply_to": rid,
+                "reply_user": ruser,
+                "reply_snippet": rsnippet
+            }
+            for u in members:
+                socketio.emit("gdm_new", payload, room=f"user:{u}")
+        return
+    
     safe_text = render_markdown(text)
     try:
         rid = int((data or {}).get('reply_to') or 0)
@@ -7040,21 +7299,6 @@ def on_send_message(data):
             try: socketio.server.disconnect(request.sid)
             except Exception: pass
             return
-    except Exception:
-        pass
-    # Anti-spam: simple per-user window (1 msg/sec, max 5 per 10s)
-    try:
-        now = time.time()
-        window = 10.0
-        hist = spam_public[username]
-        hist[:] = [t for t in hist if now - t <= window]
-        if hist and (now - hist[-1] < 1.0 or len(hist) >= 5):
-            try:
-                emit("system_message", "You are sending messages too quickly", room=f'user:{username}')
-            except Exception:
-                pass
-            return
-        hist.append(now)
     except Exception:
         pass
 
@@ -7516,6 +7760,48 @@ def on_send_message(data):
         except Exception:
             pass
         db = get_db(); cur = db.cursor()
+        # Anti-spam check
+        has_attachment = bool(attachment)
+        allowed, spam_msg, split_parts = antispam_check_message(username, text, "public", has_attachment)
+        if not allowed:
+            try:
+                emit("system_message", spam_msg, room=f"user:{username}")
+            except Exception:
+                pass
+            return
+        
+        # Handle message splitting if needed
+        if split_parts and len(split_parts) > 1:
+            try:
+                emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{username}")
+            except Exception:
+                pass
+            
+            # Send each part with rate limiting
+            for i, part in enumerate(split_parts):
+                if i > 0:
+                    time.sleep(1.0)  # Rate limit between parts
+                
+                safe_part = render_markdown(part)
+                cur.execute("INSERT INTO messages (username, text, attachment, created_at, reply_to) VALUES (?,?,?,?,?)", (username, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
+                msg_id = cur.lastrowid
+                db.commit()
+                
+                # Send to all users
+                message_data = {
+                    "id": msg_id,
+                    "username": username,
+                    "text": safe_part,
+                    "attachment": attachment if i == 0 else None,
+                    "created_at": to_ny_time(datetime.utcnow()),
+                    "avatar": f"/avatar/{username}",
+                    "reply_to": rid,
+                    "reply_user": ruser,
+                    "reply_snippet": rsnippet
+                }
+                socketio.emit("new_message", message_data, room="chat_room")
+            return
+        
         safe_text = render_markdown(text)
         try:
             rid = int((data or {}).get('reply_to') or 0)
@@ -7784,6 +8070,49 @@ def on_dm_send(data):
                 emit("system_message", "Attachment failed to upload (invalid or too large)", room=f'user:{username}')
             except Exception:
                 pass
+    # Anti-spam check
+    has_attachment = bool(attachment)
+    allowed, spam_msg, split_parts = antispam_check_message(username, text, "dm", has_attachment)
+    if not allowed:
+        try:
+            emit("system_message", spam_msg, room=f"user:{username}")
+        except Exception:
+            pass
+        return
+    
+    # Handle message splitting if needed
+    if split_parts and len(split_parts) > 1:
+        try:
+            emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{username}")
+        except Exception:
+            pass
+        
+        # Send each part with rate limiting
+        for i, part in enumerate(split_parts):
+            if i > 0:
+                time.sleep(1.0)  # Rate limit between parts
+            
+            safe_part = render_markdown(part)
+            cur.execute("INSERT INTO direct_messages (from_user, to_user, text, attachment, created_at, reply_to) VALUES (?, ?, ?, ?, ?, ?)", (username, to_user, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
+            did = cur.lastrowid
+            db.commit()
+            
+            # Send to both users
+            payload = {
+                "id": did,
+                "from_user": username,
+                "to_user": to_user,
+                "text": safe_part,
+                "attachment": attachment if i == 0 else None,
+                "created_at": to_ny_time(datetime.utcnow()),
+                "reply_to": (rid or None),
+                "reply_username": ruser,
+                "reply_snippet": rsnippet,
+            }
+            emit("dm_new", payload, room=f"user:{to_user}")
+            emit("dm_new", payload, room=f"user:{username}")
+        return
+    
     safe_text = render_markdown(text)
     db = get_db(); cur = db.cursor()
     try:

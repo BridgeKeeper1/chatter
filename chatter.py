@@ -12397,10 +12397,43 @@ CHAT_HTML = """
                   <div id='admOnline' style='display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:8px;max-height:220px;overflow-y:auto'></div>
                 </div>
                 <div id='admEmergencyCard' style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);display:none'>
-                  <h4>Emergency Status</h4>
-                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:4px'></div>
-                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280'></div>
+                  <h4>Emergency Shutdown Control</h4>
+                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:8px;font-weight:600'></div>
+                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280;margin-bottom:12px'></div>
+                  
+                  <!-- Emergency Control Buttons -->
+                  <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>
+                    <button id='btnEmergencyActivate' type='button' class='btn btn-danger' style='background:#dc2626;color:white'>
+                      🚨 Activate Emergency
+                    </button>
+                    <button id='btnEmergencyDeactivate' type='button' class='btn btn-success' style='background:#16a34a;color:white'>
+                      ✅ Deactivate Emergency
+                    </button>
+                  </div>
+                  
+                  <!-- Recovery Stage Controls -->
+                  <div id='admEmergencyStages' style='display:none;border-top:1px solid var(--border);padding-top:12px'>
+                    <div style='font-size:13px;font-weight:600;margin-bottom:8px'>Recovery Stages:</div>
+                    <div style='display:flex;gap:6px;flex-wrap:wrap'>
+                      <button id='btnStage0' type='button' class='btn btn-sm' data-stage='0'>Stage 0: Full Shutdown</button>
+                      <button id='btnStage1' type='button' class='btn btn-sm' data-stage='1'>Stage 1: Read-Only</button>
+                      <button id='btnStage2' type='button' class='btn btn-sm' data-stage='2'>Stage 2: Chat-Only</button>
+                      <button id='btnStage3' type='button' class='btn btn-sm' data-stage='3'>Stage 3: Full Recovery</button>
+                    </div>
+                  </div>
+                  
+                  <!-- Emergency Logs -->
+                  <div style='border-top:1px solid var(--border);padding-top:12px;margin-top:12px'>
+                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
+                      <span style='font-size:13px;font-weight:600'>Emergency Logs:</span>
+                      <button id='btnRefreshEmergencyLogs' type='button' class='btn btn-sm btn-outline'>Refresh</button>
+                    </div>
+                    <div id='admEmergencyLogs' style='max-height:200px;overflow-y:auto;font-size:12px;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px'>
+                      <div style='color:#6b7280'>Click refresh to load emergency logs...</div>
+                    </div>
+                  </div>
                 </div>
+
                 <div style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)'>
                   <h4>Banned IPs</h4>
                   <div id='admBIPs' style='font-size:14px;margin-bottom:8px'></div>
@@ -12788,13 +12821,23 @@ CHAT_HTML = """
                 const cardEl = box.querySelector('#admEmergencyCard');
                 const emStatusEl = box.querySelector('#admEmergencyStatus');
                 const emSnapEl = box.querySelector('#admEmergencySnapshot');
+                const stagesEl = box.querySelector('#admEmergencyStages');
+                
                 if (!cardEl) { /* nothing to do */ }
                 else if (!(emOn || showBlock)) {
                   cardEl.style.display = 'none';
                 } else {
                   cardEl.style.display = '';
                   if (emStatusEl) {
-                    emStatusEl.textContent = emOn ? 'Emergency shutdown: ACTIVE' : 'Emergency shutdown: inactive';
+                    if (emOn) {
+                      emStatusEl.innerHTML = '🚨 <span style="color:#dc2626;font-weight:bold">Emergency shutdown: ACTIVE</span>';
+                      // Show recovery stage controls when emergency is active
+                      if (stagesEl) stagesEl.style.display = '';
+                    } else {
+                      emStatusEl.innerHTML = '✅ <span style="color:#16a34a">Emergency shutdown: inactive</span>';
+                      // Hide recovery stage controls when emergency is inactive
+                      if (stagesEl) stagesEl.style.display = 'none';
+                    }
                   }
                   if (emSnapEl) {
                     const snap = s.EMERGENCY_LAST_SNAPSHOT || '';
@@ -13187,7 +13230,120 @@ CHAT_HTML = """
               const data = await r.json(); if (!r.ok){ alert(data.error||'Failed'); return;}
               await refreshAll();
             };
+            };
             // User Management wiring
+            
+            // Emergency Control Handlers
+            try {
+              const btnEmergencyActivate = box.querySelector('#btnEmergencyActivate');
+              const btnEmergencyDeactivate = box.querySelector('#btnEmergencyDeactivate');
+              const btnRefreshEmergencyLogs = box.querySelector('#btnRefreshEmergencyLogs');
+              const admEmergencyLogs = box.querySelector('#admEmergencyLogs');
+              const admEmergencyStages = box.querySelector('#admEmergencyStages');
+              
+              if (btnEmergencyActivate) {
+                btnEmergencyActivate.onclick = async () => {
+                  if (!confirm('⚠️ CRITICAL: This will activate emergency shutdown mode and block all user operations. Continue?')) return;
+                  const trigger = prompt('Enter trigger reason (optional):') || 'Manual activation';
+                  try {
+                    const r = await fetch('/api/emergency/activate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ trigger })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to activate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown activated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to activate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              if (btnEmergencyDeactivate) {
+                btnEmergencyDeactivate.onclick = async () => {
+                  if (!confirm('Deactivate emergency shutdown and return to normal operation?')) return;
+                  try {
+                    const r = await fetch('/api/emergency/deactivate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({})
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to deactivate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown deactivated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to deactivate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              // Recovery stage buttons
+              const stageButtons = box.querySelectorAll('[data-stage]');
+              stageButtons.forEach(btn => {
+                btn.onclick = async () => {
+                  const stage = parseInt(btn.dataset.stage);
+                  const stageNames = ['Full Shutdown', 'Read-Only', 'Chat-Only', 'Full Recovery'];
+                  if (!confirm(`Set recovery stage to ${stage}: ${stageNames[stage]}?`)) return;
+                  try {
+                    const r = await fetch('/api/emergency/stage', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ stage })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to set recovery stage'); return; }
+                    alert(`✅ Recovery stage set to ${stage}: ${stageNames[stage]}`);
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to set recovery stage: ' + e.message);
+                  }
+                };
+              });
+              
+              // Emergency logs refresh
+              if (btnRefreshEmergencyLogs && admEmergencyLogs) {
+                btnRefreshEmergencyLogs.onclick = async () => {
+                  try {
+                    const r = await fetch('/api/emergency/logs');
+                    const data = await r.json();
+                    if (!r.ok) { 
+                      admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + (data.error || 'Unknown error') + '</div>';
+                      return; 
+                    }
+                    
+                    if (!data.logs || data.logs.length === 0) {
+                      admEmergencyLogs.innerHTML = '<div style="color:#6b7280">No emergency logs found.</div>';
+                      return;
+                    }
+                    
+                    const logsHtml = data.logs.map(log => {
+                      const levelColor = {
+                        'CRITICAL': '#dc2626',
+                        'ERROR': '#ea580c', 
+                        'WARNING': '#d97706',
+                        'INFO': '#059669'
+                      }[log.level] || '#6b7280';
+                      
+                      return `<div style="margin-bottom:4px;padding:4px;border-left:3px solid ${levelColor};background:#f9fafb">
+                        <div style="font-weight:600;color:${levelColor}">[${log.level}] ${log.timestamp}</div>
+                        <div style="margin-top:2px">${log.message}</div>
+                        ${log.admin ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">Admin: ${log.admin}</div>` : ''}
+                      </div>`;
+                    }).join('');
+                    
+                    admEmergencyLogs.innerHTML = logsHtml;
+                  } catch (e) {
+                    admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + e.message + '</div>';
+                  }
+                };
+              }
+            } catch (e) {
+              console.error('Failed to setup emergency controls:', e);
+            }
+
             const umSearch = box.querySelector('#umSearch');
             const umResults = box.querySelector('#umResults');
             const umUser = box.querySelector('#umUser');

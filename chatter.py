@@ -102,9 +102,10 @@ def _emergency_create_snapshot(get_db_func, get_setting_func, connected_sockets,
             'database_stats': {},
             'socket_connections': len(connected_sockets),
             'socket_connections': len(connected_sockets),
+            'spam_strikes': dict(spam_strikes),
             'spam_short_message_counts': dict(spam_short_message_counts),
+            'maintenance_mode': get_setting_func('MAINTENANCE_MODE', '0')
         }
-        
         # Capture active users (last 5 minutes)
         try:
             db = get_db_func()
@@ -2515,14 +2516,14 @@ def _spam_comprehensive_gate(kind: str, username: str, text: str, *, has_attachm
             else:
                 return False, reason, None
         
-        # 2. Duplicate # 1.5. Short Message Frequency Check (for messages < 3 chars) Near-Duplicate Detection
+                # 2. Duplicate & Near-Duplicate Detection
         # 1.5. Short Message Frequency Check (for messages < 3 chars)
         allowed, reason = _spam_short_message_frequency_check(username, text)
         if not allowed:
             _spam_record_violation(username, "short_message_spam", 1)
             return False, reason, None
 
-        # 2. Duplicate         allowed, reason = _spam_duplicate_detection(username, text) Near-Duplicate Detection
+        allowed, reason = _spam_duplicate_detection(username, text)
         if not allowed:
             _spam_record_violation(username, "duplicate_content", 2)
             return False, reason, None

@@ -728,10 +728,10 @@ function render(list){
     if(host){ host.prepend(sec); }
     else if(target){ target.insertBefore(sec, target.firstChild); }
   }
-  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
+  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
   sec.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><strong>Admins</strong><span style="font-size:12px;color:#9ca3af">(' + (list||[]).length + ' online)</span></div>' + items;
 }
-function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
+function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
@@ -8792,6 +8792,210 @@ def _current_typing_list(exclude=None):
         users = [u for u in users if u != exclude]
     return users
 
+
+# Poll System
+@socketio.on("create_poll")
+def on_create_poll(data):
+    username = session.get("username")
+    if not username:
+        return
+    
+    try:
+        if _emergency_write_block(username):
+            return
+    except Exception:
+        pass
+    
+    # Validate user session
+    try:
+        if not _session_user_valid():
+            try: socketio.server.disconnect(request.sid)
+            except Exception: pass
+            return
+    except Exception:
+        return
+    
+    # Extract poll data
+    question = (data or {}).get("question", "").strip()
+    options = (data or {}).get("options", [])
+    mode = (data or {}).get("mode", "public")
+    channel_id = (data or {}).get("channel_id", "public")
+    
+    # Validate poll data
+    if not question or len(question) > 500:
+        emit("poll_error", {"error": "Poll question must be 1-500 characters"})
+        return
+    
+    if not isinstance(options, list) or len(options) < 2 or len(options) > 10:
+        emit("poll_error", {"error": "Poll must have 2-10 options"})
+        return
+    
+    # Validate options
+    clean_options = []
+    for opt in options:
+        if isinstance(opt, str) and opt.strip():
+            clean_opt = opt.strip()[:200]  # Max 200 chars per option
+            if clean_opt not in clean_options:  # No duplicates
+                clean_options.append(clean_opt)
+    
+    if len(clean_options) < 2:
+        emit("poll_error", {"error": "Need at least 2 unique options"})
+        return
+    
+    # Check user permissions (placeholder - will add admin controls later)
+    # For now, allow all users to create polls
+    
+    # Store poll in database
+    db = get_db()
+    cur = db.cursor()
+    
+    # Create polls table if not exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS polls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            question TEXT NOT NULL,
+            options TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            locked INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Create votes table if not exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS poll_votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            poll_id INTEGER NOT NULL,
+            user TEXT NOT NULL,
+            option_index INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(poll_id, user),
+            FOREIGN KEY(poll_id) REFERENCES polls(id)
+        )
+    """)
+    
+    # Insert poll
+    import json
+    now = int(time.time())
+    cur.execute("""
+        INSERT INTO polls (creator, channel, channel_id, question, options, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (username, mode, channel_id, question, json.dumps(clean_options), now))
+    
+    poll_id = cur.lastrowid
+    db.commit()
+    
+    # Create poll message data
+    poll_data = {
+        "id": poll_id,
+        "creator": username,
+        "question": question,
+        "options": clean_options,
+        "votes": {},  # Empty votes initially
+        "created_at": now
+    }
+    
+    # Broadcast poll based on mode
+    if mode == "public":
+        emit("new_poll", poll_data, room="chat_room")
+    elif mode == "dm" and channel_id:
+        # Send to both users in DM
+        emit("new_poll", poll_data, room=f"user:{username}")
+        emit("new_poll", poll_data, room=f"user:{channel_id}")
+    elif mode == "gdm" and channel_id:
+        # Send to all GDM members
+        try:
+            tid = int(channel_id)
+            cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
+            members = [r[0] for r in cur.fetchall()]
+            for member in members:
+                emit("new_poll", poll_data, room=f"user:{member}")
+        except Exception:
+            pass
+
+@socketio.on("poll_vote")
+def on_poll_vote(data):
+    username = session.get("username")
+    if not username:
+        return
+    
+    try:
+        poll_id = int((data or {}).get("poll_id", 0))
+        option_index = int((data or {}).get("option_index", -1))
+    except Exception:
+        emit("poll_error", {"error": "Invalid vote data"})
+        return
+    
+    if poll_id <= 0 or option_index < 0:
+        emit("poll_error", {"error": "Invalid vote data"})
+        return
+    
+    db = get_db()
+    cur = db.cursor()
+    
+    # Get poll info
+    cur.execute("SELECT creator, channel, channel_id, question, options, locked FROM polls WHERE id=?", (poll_id,))
+    poll_row = cur.fetchone()
+    if not poll_row:
+        emit("poll_error", {"error": "Poll not found"})
+        return
+    
+    creator, channel, channel_id, question, options_json, locked = poll_row
+    
+    if locked:
+        emit("poll_error", {"error": "Poll is closed"})
+        return
+    
+    import json
+    try:
+        options = json.loads(options_json)
+    except Exception:
+        emit("poll_error", {"error": "Poll data corrupted"})
+        return
+    
+    if option_index >= len(options):
+        emit("poll_error", {"error": "Invalid option"})
+        return
+    
+    # Record vote (replace existing vote if any)
+    now = int(time.time())
+    cur.execute("""
+        INSERT OR REPLACE INTO poll_votes (poll_id, user, option_index, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (poll_id, username, option_index, now))
+    db.commit()
+    
+    # Get updated vote counts
+    cur.execute("SELECT option_index, COUNT(*) FROM poll_votes WHERE poll_id=? GROUP BY option_index", (poll_id,))
+    vote_counts = {}
+    for opt_idx, count in cur.fetchall():
+        vote_counts[opt_idx] = count
+    
+    # Broadcast vote update
+    vote_data = {
+        "poll_id": poll_id,
+        "votes": vote_counts,
+        "voter": username,
+        "option_index": option_index
+    }
+    
+    if channel == "public":
+        emit("poll_vote_update", vote_data, room="chat_room")
+    elif channel == "dm":
+        emit("poll_vote_update", vote_data, room=f"user:{creator}")
+        emit("poll_vote_update", vote_data, room=f"user:{channel_id}")
+    elif channel == "gdm":
+        try:
+            tid = int(channel_id)
+            cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
+            members = [r[0] for r in cur.fetchall()]
+            for member in members:
+                emit("poll_vote_update", vote_data, room=f"user:{member}")
+        except Exception:
+            pass
 # HTML Templates (unchanged)
 BASE_CSS = """
 :root {
@@ -9168,98 +9372,361 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Full-Screen Responsive Design - Always show all elements */
+      /* Discord-Inspired Mobile Design - Comfortable and Spacious */
       
-      /* Small phones (up to 480px) - Full screen with scaled elements */
+      /* Small phones (up to 480px) - Discord-like comfortable layout */
       @media (max-width: 480px) {
         .app { 
           display: flex !important; 
           flex-direction: row !important; 
-          gap: 2px !important; 
+          gap: 0 !important; 
           height: 100vh; 
           overflow: hidden;
+          background: var(--bg);
         }
         
-        /* Scale sidebars to fit */
+        /* Left sidebar - Discord server list style */
         #leftbar { 
-          width: 25% !important; 
-          min-width: 80px !important; 
-          max-width: 120px !important;
-          padding: 4px !important;
+          width: 72px !important; 
+          min-width: 72px !important; 
+          max-width: 72px !important;
+          padding: 12px 8px !important;
           overflow-y: auto;
-          font-size: 11px;
-        }
-        #rightbar { 
-          width: 20% !important; 
-          min-width: 60px !important; 
-          max-width: 100px !important;
-          padding: 4px !important;
-          overflow-y: auto;
-          font-size: 11px;
+          font-size: 12px;
+          background: var(--sidebar-bg, #202225);
+          border-right: 1px solid var(--border);
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
         }
         
-        /* Main chat area takes remaining space */
+        /* Right sidebar - Discord member list style */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area - Discord chat style */
         #main { 
           flex: 1 !important; 
           min-width: 0 !important;
-          padding: 2px !important;
+          padding: 0 !important;
           display: flex;
           flex-direction: column;
           height: 100vh;
           overflow: hidden;
-        }
-        
-        /* Chat area with proper scrolling */
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 4px !important;
-          font-size: 13px;
-          line-height: 1.3;
-        }
-        
-        /* Compact form at bottom */
-        .form-row { 
-          flex-shrink: 0;
-          padding: 4px !important;
           background: var(--bg);
         }
         
-        /* Smaller text input but still usable */
-        #textInput { 
-          font-size: 14px !important; 
-          padding: 8px 6px !important; 
-          min-height: 36px !important;
-          border-radius: 6px;
+        /* Chat header area */
+        .chat-header {
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+          flex-shrink: 0;
         }
         
-        /* Compact buttons */
-        #sendForm button { 
-          padding: 8px 10px !important; 
-          min-height: 36px !important; 
-          font-size: 12px !important;
+        /* Chat messages area - Discord message style */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
         }
         
-        /* Smaller sidebar buttons */
-        #leftbar button, #rightbar button { 
-          font-size: 10px !important; 
-          padding: 4px 6px !important;
-          min-height: 32px !important;
-        }
-        
-        /* Compact messages */
+        /* Message styling - Discord-like */
         .message { 
-          font-size: 12px !important; 
-          line-height: 1.3 !important; 
-          padding: 4px !important;
-          margin: 2px 0 !important;
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          border-radius: 0;
+          background: transparent;
+          word-wrap: break-word;
         }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+          border-radius: 0;
+        }
+        
         .username { 
-          font-size: 11px !important; 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+          margin-bottom: 2px;
+          display: inline-block;
+        }
+        
+        /* Input area - Discord-like */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        /* Text input - Discord style */
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          color: var(--text);
+          width: 100%;
+          box-sizing: border-box;
+          resize: none;
+          line-height: 1.4;
+        }
+        
+        #textInput:focus {
+          outline: none;
+          border-color: var(--accent, #5865f2);
+          box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.3);
+        }
+        
+        /* Send button - Discord style */
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
           font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          cursor: pointer;
+          margin-left: 8px;
+          transition: background-color 0.2s ease;
+        }
+        
+        #sendForm button:hover {
+          background: var(--accent-hover, #4752c4) !important;
+        }
+        
+        /* Left sidebar buttons - Discord server icons style */
+        #leftbar button { 
+          font-size: 11px !important; 
+          padding: 8px 4px !important;
+          min-height: 48px !important;
+          width: 48px;
+          border-radius: 50% !important;
+          background: var(--button-bg, #36393f);
+          border: none;
+          color: var(--text);
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          line-height: 1.2;
+          word-break: break-word;
+        }
+        
+        #leftbar button:hover {
+          border-radius: 16px !important;
+          background: var(--accent, #5865f2) !important;
+          color: white;
+        }
+        
+        /* Right sidebar styling - Discord member list */
+        #rightbar button { 
+          font-size: 13px !important; 
+          padding: 8px 12px !important;
+          min-height: 36px !important;
+          width: 100%;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          cursor: pointer;
+          margin-bottom: 4px;
+          text-align: left;
+          transition: background-color 0.2s ease;
+        }
+        
+        #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* User avatars - larger and more prominent */
+        img[style*="border-radius:50%"] {
+          border: 2px solid var(--border) !important;
+        }
+        
+        /* Status indicators - larger and more visible */
+        span[style*="position:absolute"][style*="border-radius:50%"] {
+          width: 12px !important;
+          height: 12px !important;
+          border: 3px solid var(--bg, #36393f) !important;
         }
         
         /* Hide mobile nav - not needed in full screen */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0 !important; }
+        
+        /* Scrollbar styling - Discord-like */
+        ::-webkit-scrollbar {
+          width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+          background: rgba(79, 84, 92, 0.3);
+          border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+          background: rgba(79, 84, 92, 0.5);
+        }
+      }
+      
+      /* Regular phones and small tablets (481px to 768px) - Enhanced Discord style */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .app { 
+          display: flex !important; 
+          flex-direction: row !important; 
+          gap: 0 !important; 
+          height: 100vh; 
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Left sidebar - wider on larger phones */
+        #leftbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-right: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Right sidebar - comfortable width */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area */
+        #main { 
+          flex: 1 !important; 
+          min-width: 0 !important;
+          padding: 0 !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Chat messages */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
+        }
+        
+        .message { 
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          word-wrap: break-word;
+        }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+        }
+        
+        .username { 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+        }
+        
+        /* Input area */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          width: 100%;
+          box-sizing: border-box;
+        }
+        
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
+          font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          margin-left: 8px;
+        }
+        
+        /* Sidebar buttons */
+        #leftbar button, #rightbar button { 
+          font-size: 13px !important; 
+          padding: 10px 12px !important;
+          min-height: 40px !important;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          width: 100%;
+          text-align: left;
+          margin-bottom: 4px;
+          cursor: pointer;
+          transition: background-color 0.2s ease;
+        }
+        
+        #leftbar button:hover, #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* Hide mobile nav */
         #mobileNav { display: none !important; }
         body { padding-bottom: 0 !important; }
       }
@@ -9562,6 +10029,7 @@ CHAT_HTML = """
                 <div class="form-row">
                     <textarea id="textInput" rows="2" placeholder="Type a message..." autocomplete="off" style="resize:vertical"></textarea>
                     <input id="fileInput" class="file-input" type="file">
+                    <button id="pollBtn" type="button" title="Create Poll">📊</button>
                     <button type="submit">Send</button>
                 </div>
             </form>
@@ -9575,6 +10043,40 @@ CHAT_HTML = """
           <button id="closePinsOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
+      </div>
+    </div>
+
+    <!-- Poll Creation Modal -->
+    <div id="pollModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10008;overflow:auto;">
+      <div style="position:relative;max-width:520px;margin:80px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
+          <strong>📊 Create Poll</strong>
+          <button id="closePollModal" type="button" style="padding:6px 10px">✕</button>
+        </div>
+        <div style="padding:16px;color:var(--primary)">
+          <div style="margin-bottom:12px">
+            <label style="display:block;margin-bottom:4px;font-weight:600">Poll Question:</label>
+            <input id="pollQuestion" type="text" placeholder="What would you like to ask?" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--primary)">
+          </div>
+          <div style="margin-bottom:12px">
+            <label style="display:block;margin-bottom:8px;font-weight:600">Options:</label>
+            <div id="pollOptions">
+              <div class="poll-option-input" style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="text" placeholder="Option 1" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer" disabled>✕</button>
+              </div>
+              <div class="poll-option-input" style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="text" placeholder="Option 2" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>
+              </div>
+            </div>
+            <button id="addPollOption" type="button" style="padding:6px 12px;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;margin-top:6px">+ Add Option</button>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button id="cancelPoll" type="button" style="padding:8px 16px;background:var(--muted);color:var(--primary);border:1px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button>
+            <button id="createPoll" type="button" style="padding:8px 16px;background:var(--accent);color:white;border:none;border-radius:6px;cursor:pointer">Create Poll</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -10986,7 +11488,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}${badge}</span>
@@ -11006,7 +11508,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}</span>
@@ -11099,7 +11601,7 @@ CHAT_HTML = """
                 <div style='display:flex;flex-direction:column;'>
                   <div style='display:flex;align-items:center;gap:6px;'>
                     <strong>@${p.username||''}</strong>
-                    <span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                    <span style='display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                   </div>
                   <div style='color:#777;white-space:normal;word-break:break-word;overflow-wrap:anywhere;margin-top:4px'>${bio}</div>
                 </div>
@@ -11279,7 +11781,7 @@ CHAT_HTML = """
                   <span style='display:inline-flex;align-items:center;gap:8px;'>
                     <span style='position:relative;display:inline-block'>
                       <img src='${ava}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                     </span>
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
@@ -11526,9 +12028,9 @@ CHAT_HTML = """
               if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); }
             } catch(e) {}
 
-            // Add context menu for message actions
-            if (isAdmin || m.username === me) {
-                d.addEventListener('contextmenu', ev => {
+            // Add context menu for message actions - now available to all users
+            // Allow all users to access context menu
+            d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
                     
@@ -11571,21 +12073,28 @@ CHAT_HTML = """
                         );
                     }
                     if (canEdit) {
+                        const canModifyGDM = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyGDM) {
                         contextMenu.appendChild(makeItem('✏ Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('edit_message', { id: m.id, text: txt }); });
                         }));
                     }
+                    }
 
                     // Reply
                     contextMenu.appendChild(makeItem('↩ Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
-                    // Delete item
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => {
+                    // Delete item - only for admins/authors
+                    if (isAdmin || m.username === me) {
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
+                    }
+                    }
                     // DM Sender
                     if (m.username && m.username !== me) {
                         contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
@@ -11600,7 +12109,7 @@ CHAT_HTML = """
                         }
                     }, {once: true});
                 });
-            }
+
 
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
@@ -11644,9 +12153,9 @@ CHAT_HTML = """
                 ${attachmentHtml}
             `;
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
-            // Right-click for edit/delete if author/admin
-            const canModify = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Right-click context menu - Reply available to all users
+            // Allow all users to access context menu, but restrict edit/delete
+            // Context menu available to all users
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11670,13 +12179,18 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit DM', () => {
+                    const canModifyDM = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyDM) {
+                        contextMenu.appendChild(makeItem('✏ Edit DM', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    if (canModifyDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11722,9 +12236,9 @@ CHAT_HTML = """
                 ${attachmentHtml}
             `;
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
-            // Context menu for edit/delete (author/admin)
+            // Context menu - Reply available to all users
             const canModify = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Context menu available to all users
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11748,13 +12262,18 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit message', () => {
+                    const canModifyGDM = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    if (canModifyGDM) {
+                        contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -12397,10 +12916,43 @@ CHAT_HTML = """
                   <div id='admOnline' style='display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:8px;max-height:220px;overflow-y:auto'></div>
                 </div>
                 <div id='admEmergencyCard' style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);display:none'>
-                  <h4>Emergency Status</h4>
-                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:4px'></div>
-                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280'></div>
+                  <h4>Emergency Shutdown Control</h4>
+                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:8px;font-weight:600'></div>
+                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280;margin-bottom:12px'></div>
+                  
+                  <!-- Emergency Control Buttons -->
+                  <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>
+                    <button id='btnEmergencyActivate' type='button' class='btn btn-danger' style='background:#dc2626;color:white'>
+                      🚨 Activate Emergency
+                    </button>
+                    <button id='btnEmergencyDeactivate' type='button' class='btn btn-success' style='background:#16a34a;color:white'>
+                      ✅ Deactivate Emergency
+                    </button>
+                  </div>
+                  
+                  <!-- Recovery Stage Controls -->
+                  <div id='admEmergencyStages' style='display:none;border-top:1px solid var(--border);padding-top:12px'>
+                    <div style='font-size:13px;font-weight:600;margin-bottom:8px'>Recovery Stages:</div>
+                    <div style='display:flex;gap:6px;flex-wrap:wrap'>
+                      <button id='btnStage0' type='button' class='btn btn-sm' data-stage='0'>Stage 0: Full Shutdown</button>
+                      <button id='btnStage1' type='button' class='btn btn-sm' data-stage='1'>Stage 1: Read-Only</button>
+                      <button id='btnStage2' type='button' class='btn btn-sm' data-stage='2'>Stage 2: Chat-Only</button>
+                      <button id='btnStage3' type='button' class='btn btn-sm' data-stage='3'>Stage 3: Full Recovery</button>
+                    </div>
+                  </div>
+                  
+                  <!-- Emergency Logs -->
+                  <div style='border-top:1px solid var(--border);padding-top:12px;margin-top:12px'>
+                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
+                      <span style='font-size:13px;font-weight:600'>Emergency Logs:</span>
+                      <button id='btnRefreshEmergencyLogs' type='button' class='btn btn-sm btn-outline'>Refresh</button>
+                    </div>
+                    <div id='admEmergencyLogs' style='max-height:200px;overflow-y:auto;font-size:12px;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px'>
+                      <div style='color:#6b7280'>Click refresh to load emergency logs...</div>
+                    </div>
+                  </div>
                 </div>
+
                 <div style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)'>
                   <h4>Banned IPs</h4>
                   <div id='admBIPs' style='font-size:14px;margin-bottom:8px'></div>
@@ -12788,13 +13340,23 @@ CHAT_HTML = """
                 const cardEl = box.querySelector('#admEmergencyCard');
                 const emStatusEl = box.querySelector('#admEmergencyStatus');
                 const emSnapEl = box.querySelector('#admEmergencySnapshot');
+                const stagesEl = box.querySelector('#admEmergencyStages');
+                
                 if (!cardEl) { /* nothing to do */ }
                 else if (!(emOn || showBlock)) {
                   cardEl.style.display = 'none';
                 } else {
                   cardEl.style.display = '';
                   if (emStatusEl) {
-                    emStatusEl.textContent = emOn ? 'Emergency shutdown: ACTIVE' : 'Emergency shutdown: inactive';
+                    if (emOn) {
+                      emStatusEl.innerHTML = '🚨 <span style="color:#dc2626;font-weight:bold">Emergency shutdown: ACTIVE</span>';
+                      // Show recovery stage controls when emergency is active
+                      if (stagesEl) stagesEl.style.display = '';
+                    } else {
+                      emStatusEl.innerHTML = '✅ <span style="color:#16a34a">Emergency shutdown: inactive</span>';
+                      // Hide recovery stage controls when emergency is inactive
+                      if (stagesEl) stagesEl.style.display = 'none';
+                    }
                   }
                   if (emSnapEl) {
                     const snap = s.EMERGENCY_LAST_SNAPSHOT || '';
@@ -13187,7 +13749,120 @@ CHAT_HTML = """
               const data = await r.json(); if (!r.ok){ alert(data.error||'Failed'); return;}
               await refreshAll();
             };
+            };
             // User Management wiring
+            
+            // Emergency Control Handlers
+            try {
+              const btnEmergencyActivate = box.querySelector('#btnEmergencyActivate');
+              const btnEmergencyDeactivate = box.querySelector('#btnEmergencyDeactivate');
+              const btnRefreshEmergencyLogs = box.querySelector('#btnRefreshEmergencyLogs');
+              const admEmergencyLogs = box.querySelector('#admEmergencyLogs');
+              const admEmergencyStages = box.querySelector('#admEmergencyStages');
+              
+              if (btnEmergencyActivate) {
+                btnEmergencyActivate.onclick = async () => {
+                  if (!confirm('⚠️ CRITICAL: This will activate emergency shutdown mode and block all user operations. Continue?')) return;
+                  const trigger = prompt('Enter trigger reason (optional):') || 'Manual activation';
+                  try {
+                    const r = await fetch('/api/emergency/activate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ trigger })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to activate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown activated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to activate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              if (btnEmergencyDeactivate) {
+                btnEmergencyDeactivate.onclick = async () => {
+                  if (!confirm('Deactivate emergency shutdown and return to normal operation?')) return;
+                  try {
+                    const r = await fetch('/api/emergency/deactivate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({})
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to deactivate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown deactivated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to deactivate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              // Recovery stage buttons
+              const stageButtons = box.querySelectorAll('[data-stage]');
+              stageButtons.forEach(btn => {
+                btn.onclick = async () => {
+                  const stage = parseInt(btn.dataset.stage);
+                  const stageNames = ['Full Shutdown', 'Read-Only', 'Chat-Only', 'Full Recovery'];
+                  if (!confirm(`Set recovery stage to ${stage}: ${stageNames[stage]}?`)) return;
+                  try {
+                    const r = await fetch('/api/emergency/stage', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ stage })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to set recovery stage'); return; }
+                    alert(`✅ Recovery stage set to ${stage}: ${stageNames[stage]}`);
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to set recovery stage: ' + e.message);
+                  }
+                };
+              });
+              
+              // Emergency logs refresh
+              if (btnRefreshEmergencyLogs && admEmergencyLogs) {
+                btnRefreshEmergencyLogs.onclick = async () => {
+                  try {
+                    const r = await fetch('/api/emergency/logs');
+                    const data = await r.json();
+                    if (!r.ok) { 
+                      admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + (data.error || 'Unknown error') + '</div>';
+                      return; 
+                    }
+                    
+                    if (!data.logs || data.logs.length === 0) {
+                      admEmergencyLogs.innerHTML = '<div style="color:#6b7280">No emergency logs found.</div>';
+                      return;
+                    }
+                    
+                    const logsHtml = data.logs.map(log => {
+                      const levelColor = {
+                        'CRITICAL': '#dc2626',
+                        'ERROR': '#ea580c', 
+                        'WARNING': '#d97706',
+                        'INFO': '#059669'
+                      }[log.level] || '#6b7280';
+                      
+                      return `<div style="margin-bottom:4px;padding:4px;border-left:3px solid ${levelColor};background:#f9fafb">
+                        <div style="font-weight:600;color:${levelColor}">[${log.level}] ${log.timestamp}</div>
+                        <div style="margin-top:2px">${log.message}</div>
+                        ${log.admin ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">Admin: ${log.admin}</div>` : ''}
+                      </div>`;
+                    }).join('');
+                    
+                    admEmergencyLogs.innerHTML = logsHtml;
+                  } catch (e) {
+                    admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + e.message + '</div>';
+                  }
+                };
+              }
+            } catch (e) {
+              console.error('Failed to setup emergency controls:', e);
+            }
+
             const umSearch = box.querySelector('#umSearch');
             const umResults = box.querySelector('#umResults');
             const umUser = box.querySelector('#umUser');
@@ -13610,6 +14285,288 @@ CHAT_HTML = """
                 });
             }
         } catch(e) { console.warn('Resizers init failed', e); }
+
+        // Poll Creation System
+        try {
+            const pollBtn = document.getElementById("pollBtn");
+            const pollModal = document.getElementById("pollModal");
+            const closePollModal = document.getElementById("closePollModal");
+            const cancelPoll = document.getElementById("cancelPoll");
+            const createPoll = document.getElementById("createPoll");
+            const addPollOption = document.getElementById("addPollOption");
+            const pollOptions = document.getElementById("pollOptions");
+            const pollQuestion = document.getElementById("pollQuestion");
+
+            // Show poll modal
+            pollBtn.onclick = () => {
+                pollModal.style.display = "block";
+                pollQuestion.focus();
+            };
+
+            // Close poll modal
+            const closePollModalFn = () => {
+                pollModal.style.display = "none";
+                // Reset form
+                pollQuestion.value = "";
+                const optionInputs = pollOptions.querySelectorAll("input");
+                optionInputs.forEach((input, i) => {
+                    input.value = "";
+                    input.placeholder = `Option ${i + 1}`;
+                });
+                // Reset to 2 options
+                const allOptions = pollOptions.querySelectorAll(".poll-option-input");
+                allOptions.forEach((opt, i) => {
+                    if (i >= 2) opt.remove();
+                });
+                updateRemoveButtons();
+            };
+
+            closePollModal.onclick = closePollModalFn;
+            cancelPoll.onclick = closePollModalFn;
+
+            // Add new option
+            addPollOption.onclick = () => {
+                const optionCount = pollOptions.querySelectorAll(".poll-option-input").length;
+                if (optionCount >= 10) {
+                    showToast("Maximum 10 options allowed", "error");
+                    return;
+                }
+                const newOption = document.createElement("div");
+                newOption.className = "poll-option-input";
+                newOption.style.cssText = "display:flex;gap:8px;margin-bottom:6px";
+                newOption.innerHTML = `
+                    <input type="text" placeholder="Option ${optionCount + 1}" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
+                    <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>
+                `;
+                pollOptions.appendChild(newOption);
+                updateRemoveButtons();
+                // Add remove handler
+                newOption.querySelector(".remove-option").onclick = () => {
+                    newOption.remove();
+                    updateRemoveButtons();
+                    updatePlaceholders();
+                };
+            };
+
+            // Update remove button states
+            function updateRemoveButtons() {
+                const removeButtons = pollOptions.querySelectorAll(".remove-option");
+                removeButtons.forEach((btn, i) => {
+                    btn.disabled = removeButtons.length <= 2;
+                });
+            }
+
+            // Update option placeholders
+            function updatePlaceholders() {
+                const inputs = pollOptions.querySelectorAll("input");
+                inputs.forEach((input, i) => {
+                    input.placeholder = `Option ${i + 1}`;
+                });
+            }
+
+            // Add remove handlers to initial options
+            pollOptions.querySelectorAll(".remove-option").forEach(btn => {
+                btn.onclick = () => {
+                    btn.closest(".poll-option-input").remove();
+                    updateRemoveButtons();
+                    updatePlaceholders();
+                };
+            });
+
+            // Create poll
+            createPoll.onclick = () => {
+                const question = pollQuestion.value.trim();
+                if (!question) {
+                    showToast("Please enter a poll question", "error");
+                    pollQuestion.focus();
+                    return;
+                }
+
+                const optionInputs = pollOptions.querySelectorAll("input");
+                const options = [];
+                optionInputs.forEach(input => {
+                    const val = input.value.trim();
+                    if (val) options.push(val);
+                });
+
+                if (options.length < 2) {
+                    showToast("Please provide at least 2 options", "error");
+                    return;
+                }
+
+                // Send poll to server
+                const pollData = {
+                    question: question,
+                    options: options,
+                    mode: currentMode,
+                    channel_id: currentMode === "dm" ? currentPeer : (currentMode === "gdm" ? currentThreadId : "public")
+                };
+
+                socket.emit("create_poll", pollData);
+                closePollModalFn();
+                showToast("Poll created!", "ok");
+            };
+
+        } catch(e) { console.warn("Poll system init failed", e); }
+
+        // Poll Socket Event Handlers
+        try {
+            // Handle new polls
+            socket.on("new_poll", (pollData) => {
+                try {
+                    displayPoll(pollData);
+                } catch(e) { console.warn("Failed to display poll", e); }
+            });
+
+            // Handle poll vote updates
+            socket.on("poll_vote_update", (voteData) => {
+                try {
+                    updatePollVotes(voteData);
+                } catch(e) { console.warn("Failed to update poll votes", e); }
+            });
+
+            // Handle poll errors
+            socket.on("poll_error", (errorData) => {
+                try {
+                    showToast(errorData.error || "Poll error", "error");
+                } catch(e) { console.warn("Failed to show poll error", e); }
+            });
+
+            // Display poll in chat
+            function displayPoll(pollData) {
+                const chatEl = getChatElement();
+                if (!chatEl) return;
+
+                const pollDiv = document.createElement("div");
+                pollDiv.className = "poll-message";
+                pollDiv.setAttribute("data-poll-id", pollData.id);
+                pollDiv.style.cssText = `
+                    margin: 12px 0;
+                    padding: 16px;
+                    background: var(--card);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    border-left: 4px solid var(--accent);
+                `;
+
+                const pollHeader = document.createElement("div");
+                pollHeader.style.cssText = "margin-bottom: 12px; color: var(--primary);";
+                pollHeader.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                        <span style="font-size: 18px;">📊</span>
+                        <strong style="font-size: 14px; color: var(--muted);">Poll by ${escapeHtml(pollData.creator)}</strong>
+                    </div>
+                    <div style="font-size: 16px; font-weight: 600; line-height: 1.4;">${escapeHtml(pollData.question)}</div>
+                `;
+
+                const pollOptions = document.createElement("div");
+                pollOptions.className = "poll-options";
+                pollOptions.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
+
+                pollData.options.forEach((option, index) => {
+                    const optionDiv = document.createElement("div");
+                    optionDiv.className = "poll-option";
+                    optionDiv.setAttribute("data-option-index", index);
+                    optionDiv.style.cssText = `
+                        display: flex;
+                        align-items: center;
+                        padding: 10px 12px;
+                        background: var(--bg);
+                        border: 1px solid var(--border);
+                        border-radius: 6px;
+                        cursor: pointer;
+                        transition: all 0.2s ease;
+                        position: relative;
+                        overflow: hidden;
+                    `;
+
+                    const optionContent = document.createElement("div");
+                    optionContent.style.cssText = "flex: 1; display: flex; justify-content: space-between; align-items: center; z-index: 2; position: relative;";
+                    optionContent.innerHTML = `
+                        <span style="color: var(--primary); font-weight: 500;">${escapeHtml(option)}</span>
+                        <span class="vote-count" style="color: var(--muted); font-size: 14px; font-weight: 600;">0 votes</span>
+                    `;
+
+                    const progressBar = document.createElement("div");
+                    progressBar.className = "poll-progress";
+                    progressBar.style.cssText = `
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        height: 100%;
+                        background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb, 59, 130, 246), 0.3));
+                        width: 0%;
+                        transition: width 0.3s ease;
+                        z-index: 1;
+                    `;
+
+                    optionDiv.appendChild(progressBar);
+                    optionDiv.appendChild(optionContent);
+
+                    // Add click handler for voting
+                    optionDiv.onclick = () => {
+                        socket.emit("poll_vote", {
+                            poll_id: pollData.id,
+                            option_index: index
+                        });
+                    };
+
+                    // Hover effects
+                    optionDiv.onmouseenter = () => {
+                        optionDiv.style.borderColor = "var(--accent)";
+                        optionDiv.style.transform = "translateY(-1px)";
+                    };
+                    optionDiv.onmouseleave = () => {
+                        optionDiv.style.borderColor = "var(--border)";
+                        optionDiv.style.transform = "translateY(0)";
+                    };
+
+                    pollOptions.appendChild(optionDiv);
+                });
+
+                pollDiv.appendChild(pollHeader);
+                pollDiv.appendChild(pollOptions);
+                chatEl.appendChild(pollDiv);
+                chatEl.scrollTop = chatEl.scrollHeight;
+            }
+
+            // Update poll vote counts
+            function updatePollVotes(voteData) {
+                const pollDiv = document.querySelector(`[data-poll-id="${voteData.poll_id}"]`);
+                if (!pollDiv) return;
+
+                const options = pollDiv.querySelectorAll(".poll-option");
+                const totalVotes = Object.values(voteData.votes).reduce((sum, count) => sum + count, 0);
+
+                options.forEach((optionDiv, index) => {
+                    const voteCount = voteData.votes[index] || 0;
+                    const percentage = totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0;
+
+                    const voteCountSpan = optionDiv.querySelector(".vote-count");
+                    const progressBar = optionDiv.querySelector(".poll-progress");
+
+                    if (voteCountSpan) {
+                        voteCountSpan.textContent = `${voteCount} vote${voteCount !== 1 ? "s" : ""}`;
+                    }
+
+                    if (progressBar) {
+                        progressBar.style.width = `${percentage}%`;
+                    }
+                });
+            }
+
+            // Helper function to get current chat element
+            function getChatElement() {
+                if (currentMode === "dm") {
+                    return document.getElementById("dmChat");
+                } else if (currentMode === "gdm") {
+                    return document.getElementById("gdmChat");
+                } else {
+                    return document.getElementById("chat");
+                }
+            }
+
+        } catch(e) { console.warn("Poll socket handlers init failed", e); }
     </script>
 </body>
 </html>

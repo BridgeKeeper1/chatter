@@ -7616,7 +7616,9 @@ def on_gdm_send_v1(data):
 @socketio.on('gdm_edit')
 def on_gdm_edit(data):
     me = session.get('username')
+    # Emergency shutdown: block GDM edits for non-superadmins
     try:
+        if _emergency_write_block(me):
             return
     except Exception:
         pass
@@ -7627,10 +7629,6 @@ def on_gdm_edit(data):
     new_text = (data or {}).get('text', '')
     if not me or not mid:
         return
-    try:
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute('SELECT thread_id, username, text FROM group_messages WHERE id=?', (mid,))
     row = cur.fetchone()
@@ -7696,7 +7694,9 @@ def on_send_message(data):
     username = session.get("username")
     if not username:
         return
+    # Emergency shutdown: block new public messages for non-superadmins
     try:
+        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8285,6 +8285,12 @@ def on_gdm_send(data):
     username = session.get("username")
     if not username:
         return
+    # Emergency shutdown: block new GDM messages for non-superadmins
+    try:
+        if _emergency_write_block(username):
+            return
+    except Exception:
+        pass
     # Reject if user missing from DB
     try:
         if not _session_user_valid():
@@ -8353,7 +8359,9 @@ def on_disconnect():
 @socketio.on("delete_message")
 def on_delete_message(mid):
     username = session.get("username")
+    # Emergency shutdown: block message deletions for non-superadmins
     try:
+        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8389,7 +8397,9 @@ def on_edit_message(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
+    # Emergency shutdown: block message edits for non-superadmins
     try:
+        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8423,7 +8433,9 @@ def on_dm_send(data):
     username = session.get("username")
     if not username:
         return
+    # Emergency shutdown: block new DM messages for non-superadmins
     try:
+        if _emergency_write_block(username):
             return
     except Exception:
         pass
@@ -8598,6 +8610,12 @@ def on_dm_edit(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
+    # Emergency shutdown: block DM edits for non-superadmins
+    try:
+        if _emergency_write_block(username):
+            return
+    except Exception:
+        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user, text FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -8624,6 +8642,12 @@ def on_dm_delete(data):
         mid = 0
     if not username or not mid:
         return
+    # Emergency shutdown: block DM deletions for non-superadmins
+    try:
+        if _emergency_write_block(username):
+            return
+    except Exception:
+        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()

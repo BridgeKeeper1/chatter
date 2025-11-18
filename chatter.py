@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-""" # UTF-8 encoding verified and cleaned
+"""
 Chatter - Optimized Flask + Socket.IO Chat Application
 Real-time messaging with immediate message delivery and no refresh required
 """
@@ -25,10 +24,10 @@ from flask import (
     request,
     jsonify,
     session,
-    send_from_directory,
-    render_template_string,
-    abort,
-    redirect,
+    send_from_directory, 
+    render_template_string, 
+    abort, 
+    redirect, 
     url_for,
     g,
     Response
@@ -40,7 +39,7 @@ import html as _html
 import hmac
 import hashlib
 import base64 as _b64
-import shutil
+import shutil 
 
 import sqlite3
 import csv
@@ -336,7 +335,7 @@ def _get_antispam_setting(key, default='0'):
         cache_key = f'ANTISPAM_{key}'
         if cache_key in antispam_system_state['settings_cache']:
             return antispam_system_state['settings_cache'][cache_key]
-
+        
         value = get_setting(cache_key, default)
         antispam_system_state['settings_cache'][cache_key] = value
         return value
@@ -354,24 +353,24 @@ def _cleanup_antispam_memory():
         # Only cleanup every 10 minutes
         if now - antispam_system_state['global_stats']['last_cleanup_time'] < 600:
             return
-
+        
         # Clean up old user behavior data
         cutoff_time = now - 3600  # 1 hour ago
         users_to_remove = []
-
+        
         for username, data in antispam_system_state['user_behavior'].items():
             # Remove old timestamps
             while data['message_times'] and data['message_times'][0] < cutoff_time:
                 data['message_times'].popleft()
-
+            
             # If user has no recent activity, mark for removal
             if not data['message_times'] and data['last_message_time'] < cutoff_time:
                 users_to_remove.append(username)
-
+        
         # Remove inactive users
         for username in users_to_remove:
             del antispam_system_state['user_behavior'][username]
-
+        
         antispam_system_state['global_stats']['last_cleanup_time'] = now
     except Exception:
         pass
@@ -391,14 +390,14 @@ def _fuzzy_similarity(text1, text2):
     try:
         if not text1 or not text2:
             return 0.0
-
+        
         # Normalize texts
         norm1 = re.sub(r'\s+', ' ', text1.strip().lower())
         norm2 = re.sub(r'\s+', ' ', text2.strip().lower())
-
+        
         if norm1 == norm2:
             return 1.0
-
+        
         # Use difflib for similarity
         similarity = difflib.SequenceMatcher(None, norm1, norm2).ratio()
         return similarity
@@ -409,13 +408,13 @@ def _is_near_duplicate(text, username, threshold=0.85):
     """Check if message is a near-duplicate of recent messages"""
     try:
         user_data = antispam_system_state['user_behavior'][username]
-
+        
         # Check against user's recent messages
         for recent_msg in list(user_data['message_history'])[-10:]:  # Check last 10 messages
             similarity = _fuzzy_similarity(text, recent_msg)
             if similarity >= threshold:
                 return True, similarity
-
+        
         return False, 0.0
     except Exception:
         return False, 0.0
@@ -425,11 +424,11 @@ def _compress_and_measure(text):
     try:
         if not text:
             return 0, 0
-
+        
         original_size = len(text.encode('utf-8'))
         compressed = gzip.compress(text.encode('utf-8'))
         compressed_size = len(compressed)
-
+        
         return original_size, compressed_size
     except Exception:
         return 0, 0
@@ -439,36 +438,36 @@ def _detect_suspicious_patterns(text):
     try:
         if not text:
             return []
-
+        
         violations = []
-
+        
         # Excessive whitespace
         whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
         if whitespace_ratio > 0.7:
             violations.append('excessive_whitespace')
-
+        
         # HTML/CSS patterns
         html_tags = len(re.findall(r'<[^>]+>', text))
         if html_tags > 10:
             violations.append('excessive_html')
-
+        
         # Repeated structures
         div_count = len(re.findall(r'<div[^>]*>', text, re.IGNORECASE))
         script_count = len(re.findall(r'<script[^>]*>', text, re.IGNORECASE))
         br_count = len(re.findall(r'<br[^>]*>', text, re.IGNORECASE))
-
+        
         if div_count > 5:
             violations.append('excessive_divs')
         if script_count > 0:
             violations.append('script_tags')
         if br_count > 20:
             violations.append('excessive_breaks')
-
+        
         # Code block patterns
         code_blocks = len(re.findall(r'```[\s\S]*?```', text))
         if code_blocks > 3:
             violations.append('excessive_code_blocks')
-
+        
         return violations
     except Exception:
         return []
@@ -478,13 +477,13 @@ def _split_message_intelligently(text, max_length=800):
     try:
         if not text or len(text) <= max_length:
             return [text] if text else []
-
+        
         parts = []
-
+        
         # First try splitting by double newlines (paragraphs)
         paragraphs = text.split('\n\n')
         current_part = ""
-
+        
         for paragraph in paragraphs:
             if len(current_part + paragraph) <= max_length:
                 current_part += paragraph + '\n\n'
@@ -492,7 +491,7 @@ def _split_message_intelligently(text, max_length=800):
                 if current_part:
                     parts.append(current_part.strip())
                     current_part = ""
-
+                
                 # If paragraph itself is too long, split by single newlines
                 if len(paragraph) > max_length:
                     lines = paragraph.split('\n')
@@ -505,10 +504,10 @@ def _split_message_intelligently(text, max_length=800):
                             current_part = line + '\n'
                 else:
                     current_part = paragraph + '\n\n'
-
+        
         if current_part:
             parts.append(current_part.strip())
-
+        
         return parts
     except Exception:
         return [text] if text else []
@@ -518,11 +517,11 @@ def _apply_progressive_sanction(username, violation_type):
     try:
         user_data = antispam_system_state['user_behavior'][username]
         now = time.time()
-
+        
         # Increment violation count
         user_data['sanction_count'][violation_type] += 1
         total_violations = sum(user_data['sanction_count'].values())
-
+        
         # Determine sanction level based on total violations
         if total_violations == 1:
             # First violation - warning
@@ -531,7 +530,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_warnings_issued'] += 1
             return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
-
+        
         elif total_violations <= 3:
             # Second/third violation - slow mode
             user_data['sanction_level'] = 2
@@ -540,7 +539,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
             return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
-
+        
         else:
             # Fourth+ violation - restricted state
             user_data['sanction_level'] = 3
@@ -549,7 +548,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_restrictions_applied'] += 1
             return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
-
+    
     except Exception:
         return 'warning', "⚠️ Please avoid spamming."
 
@@ -558,11 +557,11 @@ def _is_user_in_slow_mode(username):
     try:
         user_data = antispam_system_state['user_behavior'][username]
         now = time.time()
-
+        
         if user_data['slow_mode_until'] > now:
             remaining = int(user_data['slow_mode_until'] - now)
             return True, remaining
-
+        
         return False, 0
     except Exception:
         return False, 0
@@ -572,22 +571,22 @@ def _should_apply_individual_slow_mode(username):
     try:
         user_data = antispam_system_state['user_behavior'][username]
         now = time.time()
-
+        
         # Check recent message frequency
         recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
-
+        
         if len(recent_messages) >= 10:  # 10+ messages in last minute
             return True, "🐌 Automatic slow mode: Too many messages in a short time."
-
+        
         # Check for rapid large messages
         recent_large = 0
         for i, length in enumerate(list(user_data['message_lengths'])[-5:]):
             if length > 500:  # Large message
                 recent_large += 1
-
+        
         if recent_large >= 3:  # 3+ large messages recently
             return True, "🐌 Automatic slow mode: Multiple large messages detected."
-
+        
         return False, ""
     except Exception:
         return False, ""
@@ -595,54 +594,54 @@ def _should_apply_individual_slow_mode(username):
 def antispam_check_message(username, text, message_type="public", has_attachment=False):
     """
     Main anti-spam check function - returns (allowed, message, split_parts)
-
+    
     This is the core function called by the message pipeline to check if a message
     should be allowed, blocked, or split. Implements all 7 anti-spam features.
     """
     try:
         # Clean up memory periodically
         _cleanup_antispam_memory()
-
+        
         # Check if anti-spam is enabled
         if _get_antispam_setting('ENABLED', '1') != '1':
             return True, "", [text] if text else []
-
+        
         # Skip checks for superadmins if configured
         try:
             if _get_antispam_setting('SKIP_SUPERADMINS', '1') == '1' and is_superadmin(username):
                 return True, "", [text] if text else []
         except Exception:
             pass
-
+        
         user_data = antispam_system_state['user_behavior'][username]
         now = time.time()
-
+        
         # Update user activity
         user_data['last_message_time'] = now
         user_data['message_times'].append(now)
         if text:
             user_data['message_lengths'].append(len(text))
-
+        
         # 1. CHECK SLOW MODE STATUS
         in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
         if in_slow_mode:
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
             return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
-
+        
         # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
         should_slow, slow_msg = _should_apply_individual_slow_mode(username)
         if should_slow:
             user_data['slow_mode_until'] = now + 10  # 10 second cooldown
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
             return False, slow_msg, []
-
+        
         # Skip further checks for empty messages with attachments
         if not text and has_attachment:
             return True, "", []
-
+        
         if not text:
             return True, "", []
-
+        
         # 3. MESSAGE LENGTH LIMITS
         max_length = int(_get_antispam_setting('MAX_MESSAGE_LENGTH', '1000'))
         if len(text) > max_length:
@@ -651,12 +650,12 @@ def antispam_check_message(username, text, message_type="public", has_attachment
                 split_parts = _split_message_intelligently(text, max_length)
                 if len(split_parts) > 1:
                     return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-
+            
             # Apply sanction for oversized message
             sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
             return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
-
+        
         # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
         if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
             is_duplicate, similarity = _is_near_duplicate(text, username)
@@ -664,17 +663,17 @@ def antispam_check_message(username, text, message_type="public", has_attachment
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
                 return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
-
+        
         # 5. PAYLOAD SIZE MONITORING
         if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
             original_size, compressed_size = _compress_and_measure(text)
             max_payload = int(_get_antispam_setting('MAX_PAYLOAD_SIZE', '10000'))
-
+            
             if original_size > max_payload:
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
                 return False, f"❌ Message payload too large. {sanction_msg}", []
-
+        
         # 6. CONTENT PATTERN ANALYSIS
         if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
             violations = _detect_suspicious_patterns(text)
@@ -682,25 +681,25 @@ def antispam_check_message(username, text, message_type="public", has_attachment
                 # Track pattern violations
                 for violation in violations:
                     user_data['pattern_violations'][violation] += 1
-
+                
                 # Apply sanction if too many pattern violations
                 total_pattern_violations = sum(user_data['pattern_violations'].values())
                 if total_pattern_violations >= 3:
                     sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
                     antispam_system_state['global_stats']['total_messages_blocked'] += 1
                     return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
-
+        
         # Store message in history for future duplicate detection
         user_data['message_history'].append(text)
-
+        
         # Calculate and store message hash
         msg_hash = _calculate_message_hash(text, username)
         if msg_hash:
             antispam_system_state['message_hashes'].append(msg_hash)
-
+        
         # Message passed all checks
         return True, "", [text]
-
+        
     except Exception as e:
         # On error, allow message but log the issue
         try:
@@ -2198,14 +2197,14 @@ def _normalize_content(text):
     """Normalize text content for comparison, avoiding over-normalization"""
     if not text:
         return ""
-
+    
     # Basic normalization - preserve structure but normalize whitespace
     normalized = ' '.join(text.strip().split())
-
+    
     # Don't normalize single characters or very short messages to avoid blocking common letters
     if len(normalized) <= 3:
         return normalized
-
+    
     return normalized.lower()
 
 def _generate_content_hash(content):
@@ -2219,23 +2218,23 @@ def _check_message_length(content, config):
     """Check if message exceeds length limits"""
     if not content:
         return True, None
-
+    
     char_count = len(content)
     byte_count = len(content.encode('utf-8'))
-
+    
     if char_count > config['MAX_MESSAGE_LENGTH']:
         return False, f"Message too long ({char_count} characters). Maximum allowed: {config['MAX_MESSAGE_LENGTH']} characters."
-
+    
     if byte_count > config['MAX_MESSAGE_BYTES']:
         return False, f"Message too large ({byte_count} bytes). Maximum allowed: {config['MAX_MESSAGE_BYTES']} bytes."
-
+    
     return True, None
 
 def _check_payload_size(content, config):
     """Check payload size using compression to detect encoded spam"""
     if not content or len(content) < 200:
         return True, None
-
+    
     try:
         # Compress content to detect large encoded payloads
         compressed = zlib.compress(content.encode('utf-8'), level=3)
@@ -2243,53 +2242,53 @@ def _check_payload_size(content, config):
             return False, "Message appears to contain large encoded data. Please send as a file instead."
     except Exception:
         pass
-
+    
     return True, None
 
 def _check_rate_limiting(username, channel_type, config):
     """Check if user is sending messages too quickly"""
     user_data = antispam_user_data[username]
     now = time.time()
-
+    
     # Clean old history
     window = config['RATE_LIMIT_WINDOW']
     user_data['message_history'] = [
-        (ts, ch) for ts, ch in user_data['message_history']
+        (ts, ch) for ts, ch in user_data['message_history'] 
         if now - ts <= window
     ]
-
+    
     # Check minimum gap between messages
     if user_data['last_message_time'] and (now - user_data['last_message_time']) < config['MIN_MESSAGE_GAP']:
         return False, f"Please wait {config['MIN_MESSAGE_GAP']} seconds between messages."
-
+    
     # Check maximum messages per window
     recent_count = len(user_data['message_history'])
     if recent_count >= config['RATE_LIMIT_MAX_MESSAGES']:
         return False, f"Too many messages in {window} seconds. Please slow down."
-
+    
     return True, None
 
 def _check_duplicate_content(username, content, channel_type, config):
     """Check for duplicate or near-duplicate content"""
     if not content or len(content) <= 10:  # Skip very short messages
         return True, None
-
+    
     user_data = antispam_user_data[username]
     now = time.time()
     normalized = _normalize_content(content)
-
+    
     # Clean old content history
     window = config['DUPLICATE_WINDOW']
     user_data['recent_messages'] = [
         (ts, msg, ch) for ts, msg, ch in user_data['recent_messages']
         if now - ts <= window
     ]
-
+    
     # Check for exact duplicates
     for ts, prev_content, prev_channel in user_data['recent_messages']:
         if normalized == prev_content:
             return False, "Duplicate message detected. Please avoid repeating the same content."
-
+    
     # Check for near-duplicates (only for longer messages to avoid false positives)
     if len(normalized) >= 20:
         for ts, prev_content, prev_channel in user_data['recent_messages']:
@@ -2300,64 +2299,64 @@ def _check_duplicate_content(username, content, channel_type, config):
                         return False, "Very similar message detected. Please avoid minor variations of the same content."
                 except Exception:
                     pass
-
+    
     return True, None
 
 def _check_content_patterns(content, config):
     """Analyze content for suspicious patterns"""
     if not content:
         return True, None
-
+    
     lower_content = content.lower()
-
+    
     # Check for HTML/script injection patterns
     html_tags = ['<div', '<script', '<style', '<html', '<body', '<iframe', '<object', '<embed']
     tag_count = sum(lower_content.count(tag) for tag in html_tags)
-
+    
     if tag_count >= config['PATTERN_HTML_TAG_LIMIT']:
         return False, "Message contains too many HTML tags. Please send as a file or remove HTML content."
-
+    
     # Check for excessive line breaks
     br_count = lower_content.count('<br')
     newline_count = content.count('\n')
-
+    
     if br_count >= config['PATTERN_BR_TAG_LIMIT'] or newline_count >= config['PATTERN_NEWLINE_LIMIT']:
         return False, "Message contains excessive line breaks. Please format your content more concisely."
-
+    
     # Check for excessive whitespace (but not single character repetition)
     if len(content) > 50:  # Only check longer messages
         whitespace_count = sum(1 for c in content if c.isspace())
         whitespace_ratio = whitespace_count / len(content)
-
+        
         if whitespace_ratio > config['PATTERN_WHITESPACE_RATIO']:
             return False, "Message contains excessive whitespace. Please format your content properly."
-
+    
     return True, None
 
 def _auto_split_message(content, config):
     """Automatically split large messages if appropriate"""
     if not content or len(content) <= config['AUTO_SPLIT_THRESHOLD']:
         return [content] if content else []
-
+    
     # Try to split by paragraphs first
     paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
     if len(paragraphs) > 1 and len(paragraphs) <= config['AUTO_SPLIT_MAX_PARTS']:
         # Check if each part is reasonable size
         if all(len(p) <= config['MAX_MESSAGE_LENGTH'] for p in paragraphs):
             return paragraphs
-
+    
     # Try to split by sentences
     sentences = [s.strip() + '.' for s in content.split('.') if s.strip()]
     if len(sentences) > 1 and len(sentences) <= config['AUTO_SPLIT_MAX_PARTS']:
         if all(len(s) <= config['MAX_MESSAGE_LENGTH'] for s in sentences):
             return sentences
-
+    
     # Try to split by lines
     lines = [line.strip() for line in content.split('\n') if line.strip()]
     if len(lines) > 1 and len(lines) <= config['AUTO_SPLIT_MAX_PARTS']:
         if all(len(line) <= config['MAX_MESSAGE_LENGTH'] for line in lines):
             return lines
-
+    
     # If can't split reasonably, return as single message (will be rejected by length check)
     return [content]
 
@@ -2365,17 +2364,17 @@ def _apply_progressive_sanctions(username, violation_type, config):
     """Apply progressive sanctions based on violation history"""
     user_data = antispam_user_data[username]
     now = time.time()
-
+    
     # Decay old violations
     if user_data['violation_timestamp'] and (now - user_data['violation_timestamp']) > config['VIOLATION_DECAY_TIME']:
         user_data['violation_count'] = max(0, user_data['violation_count'] - 1)
-
+    
     # Record new violation
     user_data['violation_count'] += 1
     user_data['violation_timestamp'] = now
-
+    
     violation_count = user_data['violation_count']
-
+    
     if violation_count >= 3:
         # Third violation: Temporary block
         user_data['block_until'] = now + config['BLOCK_DURATION_LONG']
@@ -2392,33 +2391,33 @@ def _check_user_restrictions(username, config):
     """Check if user is currently under restrictions"""
     user_data = antispam_user_data[username]
     now = time.time()
-
+    
     # Check temporary block
     if user_data['block_until'] > now:
         remaining = int(user_data['block_until'] - now)
         return False, f"You are temporarily blocked. Time remaining: {remaining} seconds."
     elif user_data['block_until'] > 0:
         user_data['block_until'] = 0  # Clear expired block
-
+    
     # Check slow mode
     if user_data['slow_mode_until'] > now:
         remaining = int(user_data['slow_mode_until'] - now)
         return False, f"Slow mode active. Please wait {remaining} seconds before sending another message."
     elif user_data['slow_mode_until'] > 0:
         user_data['slow_mode_until'] = 0  # Clear expired slow mode
-
+    
     return True, None
 
 def antispam_check_message(username, content, channel_type='public', has_attachment=False):
     """
     Main anti-spam checking function that coordinates all checks
-
+    
     Args:
         username: Username of the sender
         content: Message content to check
         channel_type: Type of channel ('public', 'dm', 'gdm')
         has_attachment: Whether message has an attachment
-
+    
     Returns:
         tuple: (allowed: bool, message: str or None, split_parts: list or None)
     """
@@ -2426,34 +2425,34 @@ def antispam_check_message(username, content, channel_type='public', has_attachm
         # Superadmins bypass all checks
         if username in SUPERADMINS:
             return True, None, None
-
+        
         if not username:
             return False, "Invalid user.", None
-
+        
         config = _load_antispam_config()
         now = time.time()
-
+        
         # Check user restrictions first
         allowed, msg = _check_user_restrictions(username, config)
         if not allowed:
             return False, msg, None
-
+        
         # For attachment-only messages, only apply rate limiting
         if not content and has_attachment:
             allowed, msg = _check_rate_limiting(username, channel_type, config)
             if not allowed:
                 _apply_progressive_sanctions(username, 'rate_limit', config)
                 return False, msg, None
-
+            
             # Update tracking
             user_data = antispam_user_data[username]
             user_data['message_history'].append((now, channel_type))
             user_data['last_message_time'] = now
             return True, None, None
-
+        
         if not content:
             return True, None, None
-
+        
         # 1. Message Length Limits
         allowed, msg = _check_message_length(content, config)
         if not allowed:
@@ -2467,52 +2466,52 @@ def antispam_check_message(username, content, channel_type='public', has_attachm
                     if not part_allowed:
                         all_valid = False
                         break
-
+                
                 if all_valid:
                     return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-
+            
             _apply_progressive_sanctions(username, 'length', config)
             return False, msg, None
-
+        
         # 2. Payload Size Monitoring
         allowed, msg = _check_payload_size(content, config)
         if not allowed:
             _apply_progressive_sanctions(username, 'payload', config)
             return False, msg, None
-
+        
         # 3. Rate Limiting
         allowed, msg = _check_rate_limiting(username, channel_type, config)
         if not allowed:
             _apply_progressive_sanctions(username, 'rate_limit', config)
             return False, msg, None
-
+        
         # 4. Duplicate Detection
         allowed, msg = _check_duplicate_content(username, content, channel_type, config)
         if not allowed:
             _apply_progressive_sanctions(username, 'duplicate', config)
             return False, msg, None
-
+        
         # 5. Content Pattern Analysis
         allowed, msg = _check_content_patterns(content, config)
         if not allowed:
             _apply_progressive_sanctions(username, 'pattern', config)
             return False, msg, None
-
+        
         # All checks passed - update tracking data
         user_data = antispam_user_data[username]
         user_data['message_history'].append((now, channel_type))
         user_data['recent_messages'].append((now, _normalize_content(content), channel_type))
         user_data['content_hashes'].append((now, _generate_content_hash(content)))
         user_data['last_message_time'] = now
-
+        
         # Clean up old data to prevent memory leaks
         window = max(config['RATE_LIMIT_WINDOW'], config['DUPLICATE_WINDOW'])
         user_data['message_history'] = [(ts, ch) for ts, ch in user_data['message_history'] if now - ts <= window]
         user_data['recent_messages'] = [(ts, msg, ch) for ts, msg, ch in user_data['recent_messages'] if now - ts <= window]
         user_data['content_hashes'] = [(ts, h) for ts, h in user_data['content_hashes'] if now - ts <= window]
-
+        
         return True, None, None
-
+        
     except Exception as e:
         # Fail open on unexpected errors to avoid breaking chat
         return True, None, None
@@ -2522,26 +2521,26 @@ def antispam_get_user_status(username):
     try:
         if username in SUPERADMINS:
             return {"status": "superadmin", "restrictions": None}
-
+        
         user_data = antispam_user_data[username]
         now = time.time()
-
+        
         status = {"status": "normal", "restrictions": []}
-
+        
         if user_data['block_until'] > now:
             remaining = int(user_data['block_until'] - now)
             status["status"] = "blocked"
             status["restrictions"].append(f"Blocked for {remaining} seconds")
-
+        
         if user_data['slow_mode_until'] > now:
             remaining = int(user_data['slow_mode_until'] - now)
             if status["status"] == "normal":
                 status["status"] = "slow_mode"
             status["restrictions"].append(f"Slow mode for {remaining} seconds")
-
+        
         if user_data['violation_count'] > 0:
             status["violation_count"] = user_data['violation_count']
-
+        
         return status
     except Exception:
         return {"status": "unknown", "restrictions": None}
@@ -2558,7 +2557,7 @@ def _init_antispam_settings():
             'ANTISPAM_MIN_GAP': '0.7',
             'ANTISPAM_SLOW_DURATION': '10.0',
         }
-
+        
         for key, value in defaults.items():
             if not get_setting(key):
                 set_setting(key, value)
@@ -4047,9 +4046,9 @@ def recover_failed_username_changes():
         db = get_db(); cur = db.cursor()
         # Find recent username changes that haven't been rolled back and check if they're valid
         cur.execute('''
-            SELECT id, user_id, old_username, new_username
-            FROM username_change_history
-            WHERE rolled_back = 0
+            SELECT id, user_id, old_username, new_username 
+            FROM username_change_history 
+            WHERE rolled_back = 0 
             AND created_at > datetime('now', '-1 hour')
             ORDER BY id DESC
         ''')
@@ -4059,7 +4058,7 @@ def recover_failed_username_changes():
             user_id = row[1] if not isinstance(row, sqlite3.Row) else row['user_id']
             old_username = row[2] if not isinstance(row, sqlite3.Row) else row['old_username']
             new_username = row[3] if not isinstance(row, sqlite3.Row) else row['new_username']
-
+            
             # Check if new username is too long or invalid
             if len(new_username) > 20:
                 # Rollback to old username
@@ -5424,7 +5423,7 @@ def store_system_message(text):
     db = get_db()
     cur = db.cursor()
     cur.execute("""
-        INSERT INTO messages (user_id, username, text, attachment, created_at)
+        INSERT INTO messages (user_id, username, text, attachment, created_at) 
         VALUES (?, ?, ?, ?, ?)
     """, (0, "System", text, None, datetime.utcnow()))
     db.commit()
@@ -6075,11 +6074,11 @@ def root():
 def register():
     if "user_id" in session:
         return redirect(url_for("chat"))
-
+    
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(REGISTER_HTML, error="Your IP address is banned"), 403
-
+    
     # Block registration if device is banned
     try:
         cid = (request.cookies.get('client_id') or '').strip()
@@ -6124,13 +6123,13 @@ def register():
         # very basic length/range checks to avoid empty or huge usernames
         if not username or len(username) > 20:
             return render_template_string(REGISTER_HTML, error="Invalid username (max 20 characters)"), 400
-
+        
         if not username or not password:
             return render_template_string(REGISTER_HTML, error="Provide username and password")
-
+        
         if username.lower() == "system":
             return render_template_string(REGISTER_HTML, error="Reserved username")
-
+        
         db = get_db()
         cur = db.cursor()
         try:
@@ -6147,27 +6146,27 @@ def register():
             return redirect(url_for("login"), code=303)
         except sqlite3.IntegrityError:
             return render_template_string(REGISTER_HTML, error="Username taken")
-
+    
     return render_template_string(REGISTER_HTML, error="")
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if "user_id" in session:
         return redirect(url_for("chat"))
-
+    
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         return render_template_string(LOGIN_HTML, error="Your IP address is banned"), 403
-
+    
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "")
-
+        
         db = get_db()
         cur = db.cursor()
         cur.execute("SELECT id, username, password_hash FROM users WHERE username=?", (username,))
         row = cur.fetchone()
-
+        
         if row and check_password_hash(row["password_hash"], password):
             # Device banned? hard block
             try:
@@ -6227,9 +6226,9 @@ def login():
             except Exception:
                 pass
             return redirect(url_for("chat"))
-
+        
         return render_template_string(LOGIN_HTML, error="Invalid username or password")
-
+    
     return render_template_string(LOGIN_HTML, error="")
 
 @app.route("/logout")
@@ -7083,15 +7082,15 @@ def api_settings():
     status_raw = data.get('status') if 'status' in data else None
     language = (data.get('language') or '').strip()
     changed = False
-
+    
     # Username change with rollback protection
     if new_username and new_username.lower() != 'system' and new_username != (row['username'] if isinstance(row, sqlite3.Row) else row[1]):
         old_username = row['username'] if isinstance(row, sqlite3.Row) else row[1]
-
+        
         # Validate username length (should already be sanitized, but double-check)
         if len(new_username) > 20:
             return jsonify({'error': 'username too long (max 20 characters)'}), 400
-
+        
         # Check if username is taken
         try:
             cur.execute('SELECT 1 FROM users WHERE username=?', (new_username,))
@@ -7099,7 +7098,7 @@ def api_settings():
                 return jsonify({'error': 'username taken'}), 400
         except Exception:
             pass
-
+        
         # Store change history BEFORE making changes (for rollback)
         try:
             cur.execute('INSERT INTO username_change_history (user_id, old_username, new_username) VALUES (?, ?, ?)',
@@ -7288,21 +7287,21 @@ def preview(filename):
     fpath = os.path.join(UPLOAD_FOLDER, filename)
     if not os.path.exists(fpath):
         abort(404)
-
+    
     ext = filename.rsplit(".", 1)[-1].lower()
     if ext in PREVIEW_EXTS:
         return send_from_directory(UPLOAD_FOLDER, filename)
-
+    
     if ext == ZIP_EXT:
         try:
             with zipfile.ZipFile(fpath, "r") as zf:
                 members = zf.namelist()
         except:
             return "<h3>Bad ZIP file</h3>", 400
-
+        
         links = ''.join(f'<li><a href="/preview/zipfile/{filename}/{m}" target="_blank">{m}</a></li>' for m in members)
         return f"<html><body><ul>{links}</ul></body></html>"
-
+    
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 # Socket.IO events
@@ -7314,7 +7313,7 @@ def on_connect():
         if is_banned(username) or is_ip_banned(client_ip):
             disconnect()
             return
-
+        
         online_users[username] = time.time()
         user_ips[username] = client_ip
         connected_sockets[request.sid] = username
@@ -7517,24 +7516,24 @@ def on_gdm_send_v1(data):
         except Exception:
             pass
         return
-
+    
     # Handle message splitting if needed
     if split_parts and len(split_parts) > 1:
         try:
             emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{me}")
         except Exception:
             pass
-
+        
         # Send each part with rate limiting
         for i, part in enumerate(split_parts):
             if i > 0:
                 time.sleep(1.0)  # Rate limit between parts
-
+            
             safe_part = render_markdown(part)
             cur.execute("INSERT INTO group_messages (thread_id, username, text, attachment, created_at, edited, reply_to) VALUES (?,?,?,?,?,0,?)", (tid, me, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
             msg_id = cur.lastrowid
             get_db().commit()
-
+            
             # Send to all members
             cur.execute("SELECT username FROM group_members WHERE thread_id=?", (tid,))
             members = [r[0] for r in cur.fetchall()]
@@ -7553,7 +7552,7 @@ def on_gdm_send_v1(data):
             for u in members:
                 socketio.emit("gdm_new", payload, room=f"user:{u}")
         return
-
+    
     safe_text = render_markdown(text)
     try:
         rid = int((data or {}).get('reply_to') or 0)
@@ -7726,7 +7725,7 @@ def on_send_message(data):
             return
     except Exception:
         pass
-
+    
     if is_banned(username):
         try:
             emit("system_message", "You are banned and cannot send messages", room=f'user:{username}')
@@ -7734,7 +7733,7 @@ def on_send_message(data):
             pass
         disconnect()
         return
-
+    
     client_ip = get_client_ip()
     if is_ip_banned(client_ip):
         try:
@@ -7743,9 +7742,9 @@ def on_send_message(data):
             pass
         disconnect()
         return
-
+    
     online_users[username] = time.time()
-
+    
     # Check timeout
     if username in user_timeouts and user_timeouts[username] > time.time():
         try:
@@ -7771,7 +7770,7 @@ def on_send_message(data):
         pass
     text = (data.get("text") or "").strip()
     attachment = None
-
+    
     if data.get("filename") and data.get("content"):
         attachment = safe_save_file_from_b64(data["filename"], data["content"])
         if attachment is None:
@@ -7813,7 +7812,7 @@ def on_send_message(data):
                 help_cmds.extend(['/ipban <user>','/ipbanip <ip> (ban raw IP)','/ipunban <ip>','/ipof <user>','/addadmin <user>','/rmadmin <user>'])
             emit("system_message", store_system_message("Commands:\n" + "\n".join(help_cmds)))
             return
-
+        
         if cmd == 'clearall':
             # Toggle gate
             try:
@@ -7826,7 +7825,7 @@ def on_send_message(data):
             socketio.emit("clear_all", room='chat_room')
             socketio.emit("system_message", store_system_message(f"All messages cleared by {username}"), room='chat_room')
             return
-
+        
         elif cmd == 'clear' and args:
             # Toggle gate
             try:
@@ -7851,7 +7850,7 @@ def on_send_message(data):
             except:
                 pass
             return
-
+        
         elif cmd == 'ban' and args:
             target = args[0]
             if not _can_ban(username, target):
@@ -7895,7 +7894,7 @@ def on_send_message(data):
                 if uname == target:
                     socketio.server.disconnect(sid)
             return
-
+        
         elif cmd == 'unban' and args:
             target = args[0]
             if not _can_unban(username, target):
@@ -7905,7 +7904,7 @@ def on_send_message(data):
             db.commit()
             emit("system_message", store_system_message(f"{target} was unbanned by {username}"))
             return
-
+        
         elif cmd == 'ipban' and args:
             target = args[0]
             mode = (args[1].lower() if len(args) > 1 else 'auto') if args else 'auto'
@@ -7970,7 +7969,7 @@ def on_send_message(data):
                 except Exception:
                     pass
             return
-
+        
         elif cmd == 'ipunban' and args:
             ip_address = args[0]
             cur.execute("DELETE FROM banned_ips WHERE ip_address= ?", (ip_address,))
@@ -8050,7 +8049,7 @@ def on_send_message(data):
                 merged = sorted(list(ADMINS))
             emit('admin_list', {'admins': merged})
             return
-
+        
         elif cmd == 'ipof' and args:
             # Show the current IP of a user (online users only)
             target = sanitize_username(args[0])
@@ -8066,7 +8065,7 @@ def on_send_message(data):
                 else:
                     emit("system_message", store_system_message(f"No IP found for {target} (user offline)"))
             return
-
+        
         elif cmd == 'ipbanip' and args:
             # Ban a raw IP directly
             ip = args[0].strip()
@@ -8126,7 +8125,7 @@ def on_send_message(data):
             user_timeouts[target] = time.time() + seconds
             emit("system_message", store_system_message(f"{target} timed out for {seconds} seconds by {username}"))
             return
-
+        
         elif cmd == 'untimeout' and args:
             target = args[0]
             if target in user_timeouts:
@@ -8137,7 +8136,7 @@ def on_send_message(data):
             except Exception:
                 pass
             return
-
+        
         elif cmd == 'cleartxt':
             # SUPERADMIN only: clear the text log file chat_messages.txt
             if is_superadmin(username):
@@ -8177,24 +8176,24 @@ def on_send_message(data):
             except Exception:
                 pass
             return
-
+        
         # Handle message splitting if needed
         if split_parts and len(split_parts) > 1:
             try:
                 emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{username}")
             except Exception:
                 pass
-
+            
             # Send each part with rate limiting
             for i, part in enumerate(split_parts):
                 if i > 0:
                     time.sleep(1.0)  # Rate limit between parts
-
+                
                 safe_part = render_markdown(part)
                 cur.execute("INSERT INTO messages (username, text, attachment, created_at, reply_to) VALUES (?,?,?,?,?)", (username, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
                 msg_id = cur.lastrowid
                 db.commit()
-
+                
                 # Send to all users
                 message_data = {
                     "id": msg_id,
@@ -8209,7 +8208,7 @@ def on_send_message(data):
                 }
                 socketio.emit("new_message", message_data, room="chat_room")
             return
-
+        
         safe_text = render_markdown(text)
         try:
             rid = int((data or {}).get('reply_to') or 0)
@@ -8232,7 +8231,7 @@ def on_send_message(data):
             except Exception:
                 rid = 0
         cur.execute("""
-            INSERT INTO messages (user_id, username, text, attachment, created_at, reply_to)
+            INSERT INTO messages (user_id, username, text, attachment, created_at, reply_to) 
             VALUES (?, ?, ?, ?, ?, ?)
         """, (session.get("user_id"), username, safe_text, attachment, datetime.utcnow(), (rid or None)))
         db.commit()
@@ -8256,7 +8255,7 @@ def on_send_message(data):
             _append_log_line(line)
         except Exception:
             pass
-
+        
         message_data = {
             "id": msg_id,
             "user_id": session["user_id"],
@@ -8370,7 +8369,7 @@ def on_delete_message(mid):
     cur = db.cursor()
     cur.execute("SELECT username FROM messages WHERE id= ?", (mid,))
     row = cur.fetchone()
-
+    
     if not row:
         return
     author = row[0] if not isinstance(row, sqlite3.Row) else row["username"]
@@ -8496,24 +8495,24 @@ def on_dm_send(data):
         except Exception:
             pass
         return
-
+    
     # Handle message splitting if needed
     if split_parts and len(split_parts) > 1:
         try:
             emit("system_message", f"Your message will be split into {len(split_parts)} parts.", room=f"user:{username}")
         except Exception:
             pass
-
+        
         # Send each part with rate limiting
         for i, part in enumerate(split_parts):
             if i > 0:
                 time.sleep(1.0)  # Rate limit between parts
-
+            
             safe_part = render_markdown(part)
             cur.execute("INSERT INTO direct_messages (from_user, to_user, text, attachment, created_at, reply_to) VALUES (?, ?, ?, ?, ?, ?)", (username, to_user, safe_part, attachment if i == 0 else None, datetime.utcnow(), (rid or None)))
             did = cur.lastrowid
             db.commit()
-
+            
             # Send to both users
             payload = {
                 "id": did,
@@ -8529,7 +8528,7 @@ def on_dm_send(data):
             emit("dm_new", payload, room=f"user:{to_user}")
             emit("dm_new", payload, room=f"user:{username}")
         return
-
+    
     safe_text = render_markdown(text)
     db = get_db(); cur = db.cursor()
     try:
@@ -9310,7 +9309,7 @@ CHAT_HTML = """
         </aside>
     </div>
 
-
+    
 
     <!-- Mobile Navigation -->
     <nav id="mobileNav" style="display:none;">
@@ -10230,26 +10229,12 @@ CHAT_HTML = """
             pinnedMessageEl = null;
           }
           if (!msg || currentMode !== 'public') return;
-
-          // Store current pinned message for pin button functionality
-          currentPinnedMessage = msg;
-          // Hide pin button when showing pin
-          hidePinButton();
-          // Check if this pin is closed by the user
-          try {
-            const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
-            if (closedPins[msg.id]) {
-              // Pin is closed, show pin button instead
-              showPinButton();
-              return;
-            }
-          } catch(e) {}
-
+          
           // Create pinned message element at top of chat
           pinnedMessageEl = document.createElement('div');
           pinnedMessageEl.id = 'pinnedMessageTop';
           pinnedMessageEl.style.cssText = 'background:#fffbe6;border:2px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:12px;position:sticky;top:0;z-index:4';
-
+          
           // Add close button to pinned message
           const closeBtn = document.createElement("button");
           closeBtn.innerHTML = "✕";
@@ -10258,20 +10243,29 @@ CHAT_HTML = """
           closeBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            // Store closed state in localStorage
-            try {
-              const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
-              closedPins[msg.id] = true;
-              localStorage.setItem("closedPins", JSON.stringify(closedPins));
-            } catch(e) {}
-            // Hide the pinned message
-            pinnedMessageEl.remove();
-            pinnedMessageEl = null;
-            // Show pin button indicator
-            showPinButton();
+            if (confirm("Remove this pinned message?")) {
+              // Call unpin API
+              fetch(`/api/admin/unpin`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({kind: "public", message_id: msg.id})
+              })
+              .then(r => r.json())
+              .then(data => {
+                if (data.ok) {
+                  pinnedMessageEl.remove();
+                  pinnedMessageEl = null;
+                } else {
+                  alert("Failed to unpin message: " + (data.error || "Unknown error"));
+                }
+              })
+              .catch(err => {
+                alert("Error unpinning message: " + err.message);
+              });
+            }
           };
           pinnedMessageEl.appendChild(closeBtn);
-
+          
           let text = (msg.text||'');
           try {
             text = text.replace(/^<p>/i, '').replace(/<\/p>$/i, '');
@@ -10279,7 +10273,7 @@ CHAT_HTML = """
           const username = (msg.username||'');
           const time = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
           const mAva = getAvatar(username);
-
+          
           pinnedMessageEl.innerHTML = `
             <div style='display:flex;align-items:flex-start;gap:10px'>
               <div style='font-size:20px'>📌</div>
@@ -10293,7 +10287,7 @@ CHAT_HTML = """
               </div>
             </div>
           `;
-
+          
           // Insert at the top of chatEl
           if (chatEl && chatEl.firstChild) {
             chatEl.insertBefore(pinnedMessageEl, chatEl.firstChild);
@@ -10308,48 +10302,6 @@ CHAT_HTML = """
             const j = await r.json();
             if(r.ok && j && j.ok){ renderPinnedPublic(j.message); }
           } catch(e) {}
-        }
-
-        // Pin button functionality for closed pins
-        let pinButtonEl = null;
-        let currentPinnedMessage = null;
-
-        function showPinButton() {
-          // Remove existing pin button if any
-          if (pinButtonEl && pinButtonEl.parentNode) {
-            pinButtonEl.remove();
-            pinButtonEl = null;
-          }
-
-          // Create pin button indicator
-          pinButtonEl = document.createElement("div");
-          pinButtonEl.style.cssText = "position:fixed;top:20px;right:20px;background:#f59e0b;color:#fff;border:none;border-radius:50%;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:1000;font-size:20px";
-          pinButtonEl.innerHTML = "📌";
-          pinButtonEl.title = "Show pinned message";
-          pinButtonEl.onclick = () => {
-            // Clear closed state and show the pin
-            try {
-              if (currentPinnedMessage) {
-                const closedPins = JSON.parse(localStorage.getItem("closedPins") || "{}");
-                delete closedPins[currentPinnedMessage.id];
-                localStorage.setItem("closedPins", JSON.stringify(closedPins));
-                // Re-render the pinned message
-                renderPinnedPublic(currentPinnedMessage);
-                // Remove pin button
-                pinButtonEl.remove();
-                pinButtonEl = null;
-              }
-            } catch(e) {}
-          };
-
-          document.body.appendChild(pinButtonEl);
-        }
-
-        function hidePinButton() {
-          if (pinButtonEl && pinButtonEl.parentNode) {
-            pinButtonEl.remove();
-            pinButtonEl = null;
-          }
         }
 
         // Socket connection events
@@ -10438,7 +10390,7 @@ CHAT_HTML = """
         // Load existing messages immediately when connected
         function loadMessages() {
             if (messagesLoaded) return;
-
+            
             fetch('/api/messages')
                 .then(res => res.json())
                 .then(msgs => {
@@ -10732,14 +10684,8 @@ CHAT_HTML = """
                 socket.on('pin_update', (payload)=>{
                   try {
                     if(!payload || payload.kind!=='public') return;
-                    if(payload.action==='pin'){
-                      // Clear closed state when new pin is created
-                      try {
-                        localStorage.setItem("closedPins", JSON.stringify({}));
-                      } catch(e) {}
-                      renderPinnedPublic(payload.message||null);
-                    }
-                    else if(payload.action==='unpin'){
+                    if(payload.action==='pin'){ renderPinnedPublic(payload.message||null); }
+                    else if(payload.action==='unpin'){ 
                       // If unpinned, check if there's another pin
                       ensurePinnedLoaded();
                     }
@@ -11197,17 +11143,17 @@ CHAT_HTML = """
             const time = new Date(m.created_at).toLocaleString();
             const idBadge = m && m.id ? `<span class="time" style="margin-left:6px;color:#6b7280">#${m.id}</span>` : '';
             let attachmentHtml = '';
-
+            
             if (m.attachment) {
                 const downloadUrl = '/uploads/' + encodeURIComponent(m.attachment);
                 const ext = (m.attachment.split('.').pop() || '').toLowerCase();
                 let previewPart = '';
-
+                
                 if (['png','jpg','jpeg','gif','mp4','webm','html','zip'].includes(ext)) {
                     const previewUrl = '/preview/' + encodeURIComponent(m.attachment);
                     previewPart = `<a href="${previewUrl}" target="_blank">preview</a>`;
                 }
-
+                
                 attachmentHtml = `<div class="attachment">Attachment: ${m.attachment}, <a href="${downloadUrl}">download</a>${previewPart ? ', ' + previewPart : ''}</div>`;
             }
 
@@ -11244,7 +11190,7 @@ CHAT_HTML = """
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
-
+                    
                     contextMenu = document.createElement('div');
                     contextMenu.style.position = 'fixed';
                     contextMenu.style.top = ev.pageY + 'px';
@@ -11303,9 +11249,9 @@ CHAT_HTML = """
                     if (m.username && m.username !== me) {
                         contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
                     }
-
+                    
                     document.body.appendChild(contextMenu);
-
+                    
                     document.addEventListener('click', e => {
                         if (contextMenu && !contextMenu.contains(e.target)) {
                             contextMenu.remove();
@@ -11314,57 +11260,6 @@ CHAT_HTML = """
                     }, {once: true});
                 });
             }
-            } else if (m.username && m.username !== me) {
-                // Context menu for regular users on other people's messages
-                d.addEventListener('contextmenu', ev => {
-                    ev.preventDefault();
-                    if (contextMenu) contextMenu.remove();
-
-                    contextMenu = document.createElement('div');
-                    contextMenu.style.position = 'fixed';
-                    contextMenu.style.top = ev.pageY + 'px';
-                    contextMenu.style.left = ev.pageX + 'px';
-                    contextMenu.style.background = 'var(--card)';
-                    contextMenu.style.border = '1px solid var(--border)';
-                    contextMenu.style.padding = '6px 10px';
-                    contextMenu.style.borderRadius = '6px';
-                    contextMenu.style.zIndex = '9999';
-                    contextMenu.style.color = 'var(--primary)';
-                    contextMenu.style.boxShadow = '0 10px 24px rgba(0,0,0,0.25)';
-
-                    const makeItem = (label, handler) => {
-                        const item = document.createElement('div');
-                        item.textContent = label;
-                        item.style.padding = '6px 4px';
-                        item.style.cursor = 'pointer';
-                        item.onmouseenter = () => item.style.background = 'var(--bg)';
-                        item.onmouseleave = () => item.style.background = 'var(--card)';
-                        item.onclick = () => {
-                            try { handler(); } finally {
-                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
-                            }
-                        };
-                        return item;
-                    };
-
-                    // Reply option
-                    contextMenu.appendChild(makeItem('↩ Reply', () => {
-                        setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
-                    }));
-
-                    // DM option
-                    contextMenu.appendChild(makeItem('💬 DM ' + m.username, () => { openDM(m.username); }));
-
-                    document.body.appendChild(contextMenu);
-
-                    document.addEventListener('click', e => {
-                        if (contextMenu && !contextMenu.contains(e.target)) {
-                            contextMenu.remove();
-                            contextMenu = null;
-                        }
-                    }, {once: true});
-                });
-
 
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
@@ -11445,47 +11340,6 @@ CHAT_HTML = """
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
             }
-            } else if (dm.from_user && dm.from_user !== me) {
-                // Context menu for regular users on other people's DM messages
-                d.addEventListener('contextmenu', ev => {
-                    ev.preventDefault();
-                    if (contextMenu) contextMenu.remove();
-
-                    contextMenu = document.createElement('div');
-                    contextMenu.style.position = 'fixed';
-                    contextMenu.style.top = ev.pageY + 'px';
-                    contextMenu.style.left = ev.pageX + 'px';
-                    contextMenu.style.background = '#fff';
-                    contextMenu.style.border = '1px solid #ccc';
-                    contextMenu.style.padding = '6px 10px';
-                    contextMenu.style.borderRadius = '6px';
-                    contextMenu.style.zIndex = '9999';
-                    contextMenu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-
-                    const makeItem = (label, handler) => {
-                        const item = document.createElement('div');
-                        item.textContent = label;
-                        item.style.padding = '6px 4px';
-                        item.style.cursor = 'pointer';
-                        item.onmouseenter = () => item.style.background = '#f0f0f0';
-                        item.onmouseleave = () => item.style.background = '#fff';
-                        item.onclick = () => {
-                            try { handler(); } finally {
-                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
-                            }
-                        };
-                        return item;
-                    };
-
-                    // Reply option
-                    contextMenu.appendChild(makeItem('↩ Reply', () => {
-                        setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' });
-                    }));
-
-                    document.body.appendChild(contextMenu);
-                    document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
-                });
-
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -11564,50 +11418,6 @@ CHAT_HTML = """
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
             }
-            } else if (m.username && m.username !== me) {
-                // Context menu for regular users on other people's GDM messages
-                d.addEventListener('contextmenu', ev => {
-                    ev.preventDefault();
-                    if (contextMenu) contextMenu.remove();
-
-                    contextMenu = document.createElement('div');
-                    contextMenu.style.position = 'fixed';
-                    contextMenu.style.top = ev.pageY + 'px';
-                    contextMenu.style.left = ev.pageX + 'px';
-                    contextMenu.style.background = '#fff';
-                    contextMenu.style.border = '1px solid #ccc';
-                    contextMenu.style.padding = '6px 10px';
-                    contextMenu.style.borderRadius = '6px';
-                    contextMenu.style.zIndex = '9999';
-                    contextMenu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-
-                    const makeItem = (label, handler) => {
-                        const item = document.createElement('div');
-                        item.textContent = label;
-                        item.style.padding = '6px 4px';
-                        item.style.cursor = 'pointer';
-                        item.onmouseenter = () => item.style.background = '#f0f0f0';
-                        item.onmouseleave = () => item.style.background = '#fff';
-                        item.onclick = () => {
-                            try { handler(); } finally {
-                                if (contextMenu) { contextMenu.remove(); contextMenu = null; }
-                            }
-                        };
-                        return item;
-                    };
-
-                    // Reply option
-                    contextMenu.appendChild(makeItem('↩ Reply', () => {
-                        setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
-                    }));
-
-                    // DM option
-                    contextMenu.appendChild(makeItem('💬 DM ' + m.username, () => { openDM(m.username); }));
-
-                    document.body.appendChild(contextMenu);
-                    document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
-                });
-
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -11786,7 +11596,7 @@ CHAT_HTML = """
         }
         socket.on('timeout_set', ({until}) => { try { timeoutUntil = parseInt(until||0,10)||0; showTimeoutBanner(); } catch(e){} });
         socket.on('timeout_removed', () => { try { timeoutUntil = 0; } catch(e){} });
-
+        
         let lastTypedAt = 0;
         document.getElementById('textInput').addEventListener('input', () => {
             if (typingTimer) clearTimeout(typingTimer);
@@ -11961,7 +11771,7 @@ CHAT_HTML = """
         const pinsList = document.getElementById('pinsList');
         const pinsBtn = document.getElementById('pinsBtn');
         const closePinsOverlay = document.getElementById('closePinsOverlay');
-
+        
         async function loadAllPinnedMessages() {
           try {
             const r = await fetch('/api/pinned?type=public&all=true', {credentials:'same-origin'});
@@ -11996,7 +11806,7 @@ CHAT_HTML = """
             try { Language.translateFragment(pinsList); } catch(_){}
           }
         }
-
+        
         if (pinsBtn) {
           pinsBtn.onclick = () => {
             pinsOverlay.style.display = 'block';
@@ -12907,7 +12717,7 @@ CHAT_HTML = """
                     'UM_BAN_USER','UM_TIMEOUT_USER','UM_SEARCH_USER','UM_TEMP_BAN','UM_GLOBAL_WARNING','UM_SHADOW_BAN',
                     'MC_DELETE_MESSAGES','MC_EDIT_MESSAGES','MC_SEARCH_MESSAGES','MC_PURGE_CHANNEL','MC_PIN_MESSAGE','MC_BROADCAST_MESSAGE','MC_VIEW_HISTORY','MC_MESSAGE_LIFESPAN',
                     'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
-                    'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN','DOWNTIME_ENABLED','ALERTS_ENABLED'
+                    'DOWNTIME_ENABLED','ALERTS_ENABLED'
                   ];
                   ids.forEach(id=>{ const el = box.querySelector('#'+id); if (el && 'checked' in el) payload[id] = el.checked? '1':'0'; });
                   payload['DOWNTIME_REASON'] = (box.querySelector('#DOWNTIME_REASON')?.value||'');

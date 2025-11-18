@@ -228,6 +228,74 @@ def _log_incident(kind: str, meta: dict | None = None):
         pass
 
 # ============================================================================
+# EMERGENCY SHUTDOWN FUNCTIONS
+# ============================================================================
+
+def _is_emergency_shutdown() -> bool:
+    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
+
+    This is used to enforce a global emergency read-only mode.
+    """
+    try:
+        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
+    except Exception:
+        return False
+
+def _emergency_write_block(user: str | None = None) -> bool:
+    """Return True if writes should be blocked for this user due to emergency shutdown.
+
+    Superadmins are allowed to continue making changes so they can manage recovery.
+    """
+    try:
+        if not _is_emergency_shutdown():
+            return False
+        # Allow superadmins to keep writing during emergency
+        try:
+            if user and is_superadmin(user):
+                return False
+        except Exception:
+            pass
+        # Best-effort notification to the user; do not persist
+        try:
+            if user:
+                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+def _maybe_snapshot_db_on_emergency(old_val: str, new_val: str):
+    """When emergency shutdown flips from 0 -> 1, take a best-effort DB snapshot.
+
+    This is intentionally lightweight: it copies the SQLite file and logs the event.
+    """
+    try:
+        if old_val == '0' and new_val == '1':
+            try:
+                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            except Exception:
+                ts = str(int(time.time()))
+            base = os.path.basename(DB_PATH)
+            snap_name = f"emergency_{ts}_{base}"
+            dest = os.path.join(BACKUP_DIR, snap_name)
+            try:
+                shutil.copy2(DB_PATH, dest)
+            except Exception:
+                # If copy fails, still log the attempt
+                dest = ''
+            meta = {'snapshot': dest or 'failed', 'db_path': DB_PATH}
+            try:
+                u = session.get('username') or ''
+                if u:
+                    meta['actor'] = u
+            except Exception:
+                pass
+            _log_incident('emergency_shutdown', meta)
+    except Exception:
+        pass
+
+# ============================================================================
 # COMPREHENSIVE ANTI-SPAM SYSTEM
 # ============================================================================
 
@@ -1822,8 +1890,10 @@ def set_setting(key: str, value: str):
     try:
         _ensure_app_settings()
         db = get_db(); cur = db.cursor()
+        # For emergency toggle, read old value so we can detect 0->1 transitions
         old_val = None
         try:
+            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
                 cur.execute('SELECT value FROM app_settings WHERE key=?', (key,))
                 row = cur.fetchone()
                 if row is not None:
@@ -1832,9 +1902,15 @@ def set_setting(key: str, value: str):
             old_val = None
         cur.execute('INSERT OR REPLACE INTO app_settings(key, value) VALUES(?,?)', (key, str(value)))
         db.commit()
+        try:
+            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
+                _maybe_snapshot_db_on_emergency(str(old_val or '0'), str(value))
+        except Exception:
+            pass
         return True
     except Exception:
         return False
+
 
 # Message/activity log file
 LOG_FILE = "chat_messages.txt"
@@ -5490,6 +5566,11 @@ def api_admin_app_settings():
         'ADMIN_SYNC_PERMS',
         'ADMIN_VIEW_ACTIVE',
         'ADMIN_STEALTH_MODE',
+        'ADMIN_EMERGENCY_SHUTDOWN',
+        'ADMIN_SHOW_EMERGENCY_BLOCK',
+        # Emergency metadata (read-only status helpers)
+        'EMERGENCY_LAST_SNAPSHOT',
+        'EMERGENCY_LAST_TIME',
         # Security
         'SEC_STRICT_ASSOCIATED_BAN',
         'SEC_DEVICE_BAN_ON_LOGIN',
@@ -12199,6 +12280,7 @@ CHAT_HTML = """
                         <label><input type='checkbox' id='ADMIN_SYNC_PERMS'> Sync Permissions</label><br>
                         <label><input type='checkbox' id='ADMIN_VIEW_ACTIVE'> View Active Admins</label><br>
                         <label><input type='checkbox' id='ADMIN_STEALTH_MODE'> Stealth Mode</label><br>
+                        <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
                         <div style='margin-top:8px;padding-top:6px;border-top:1px dashed #e5e7eb'>
                           <label style='display:inline-flex;gap:6px;align-items:center'><input type='checkbox' id='ALERTS_ENABLED'> On-screen Alert (bottom-left)</label>
                           <textarea id='ALERTS_TEXT' placeholder='Alert text' rows='2' style='width:100%;margin-top:6px'></textarea>

@@ -14311,7 +14311,7 @@ CHAT_HTML = """
                 const optionInputs = pollOptions.querySelectorAll("input");
                 optionInputs.forEach((input, i) => {
                     input.value = "";
-                    input.placeholder = `Option ${i + 1}`;
+                    input.placeholder = "Option " + (i + 1);
                 });
                 // Reset to 2 options
                 const allOptions = pollOptions.querySelectorAll(".poll-option-input");
@@ -14334,10 +14334,9 @@ CHAT_HTML = """
                 const newOption = document.createElement("div");
                 newOption.className = "poll-option-input";
                 newOption.style.cssText = "display:flex;gap:8px;margin-bottom:6px";
-                newOption.innerHTML = `
-                    <input type="text" placeholder="Option ${optionCount + 1}" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">
-                    <button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>
-                `;
+                newOption.innerHTML = 
+                    '<input type="text" placeholder="Option ' + (optionCount + 1) + '" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--primary)">' +
+                    '<button type="button" class="remove-option" style="padding:6px 10px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer">✕</button>';
                 pollOptions.appendChild(newOption);
                 updateRemoveButtons();
                 // Add remove handler
@@ -14360,7 +14359,7 @@ CHAT_HTML = """
             function updatePlaceholders() {
                 const inputs = pollOptions.querySelectorAll("input");
                 inputs.forEach((input, i) => {
-                    input.placeholder = `Option ${i + 1}`;
+                    input.placeholder = "Option " + (i + 1);
                 });
             }
 
@@ -14454,9 +14453,9 @@ CHAT_HTML = """
                 pollHeader.innerHTML = `
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
                         <span style="font-size: 18px;">📊</span>
-                        <strong style="font-size: 14px; color: var(--muted);">Poll by ${escapeHtml(pollData.creator)}</strong>
+                        <strong style="font-size: 14px; color: var(--muted);">Poll by " + escapeHtml(pollData.creator) + "</strong>
                     </div>
-                    <div style="font-size: 16px; font-weight: 600; line-height: 1.4;">${escapeHtml(pollData.question)}</div>
+                    <div style="font-size: 16px; font-weight: 600; line-height: 1.4;">" + escapeHtml(pollData.question) + "</div>
                 `;
 
                 const pollOptions = document.createElement("div");
@@ -14532,7 +14531,7 @@ CHAT_HTML = """
 
             // Update poll vote counts
             function updatePollVotes(voteData) {
-                const pollDiv = document.querySelector(`[data-poll-id="${voteData.poll_id}"]`);
+                const pollDiv = document.querySelector("[data-poll-id="" + voteData.poll_id + ""]");
                 if (!pollDiv) return;
 
                 const options = pollDiv.querySelectorAll(".poll-option");
@@ -14546,11 +14545,11 @@ CHAT_HTML = """
                     const progressBar = optionDiv.querySelector(".poll-progress");
 
                     if (voteCountSpan) {
-                        voteCountSpan.textContent = `${voteCount} vote${voteCount !== 1 ? "s" : ""}`;
+                        voteCountSpan.textContent = voteCount + " vote" + (voteCount !== 1 ? "s" : "");
                     }
 
                     if (progressBar) {
-                        progressBar.style.width = `${percentage}%`;
+                        progressBar.style.width = percentage + "%";
                     }
                 });
             }

@@ -728,14 +728,14 @@ function render(list){
     if(host){ host.prepend(sec); }
     else if(target){ target.insertBefore(sec, target.firstChild); }
   }
-  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
+  const items=(list||[]).map(function(a){ return '<div class="admin-item" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role)+'</div>'; }).join('');
   sec.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><strong>Admins</strong><span style="font-size:12px;color:#9ca3af">(' + (list||[]).length + ' online)</span></div>' + items;
 }
-function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
+function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorAll('.admin-mirror').forEach(function(el){ el.remove(); }); (list||[]).forEach(function(a){ const el=document.createElement('div'); el.className='admin-mirror'; el.style.display='flex'; el.style.alignItems='center'; el.style.gap='6px'; el.style.padding='4px 0'; el.innerHTML = '<span class="dot" style="width:12px;height:12px;border-radius:50%;background:#22c55e;display:inline-block"></span><span>'+a.username+'</span>'+badge(a.role); host.appendChild(el); }); }
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
-  const isHeader = (t) => /(ONLINE|OFFLINE)\s*�/i.test(t);
+  const isHeader = (t) => /(ONLINE|OFFLINE)\s*—/i.test(t);
   const wipe = (node) => { if(node) node.textContent=''; };
   ['.status','.user-status','.presence','.presence-text','.status-text'].forEach(function(q){ root.querySelectorAll(q).forEach(wipe); });
   root.querySelectorAll('span,small,div,p').forEach(function(el){
@@ -758,7 +758,7 @@ function observeStatuses(){
 async function tick(){ try{ const r=await fetch('/api/admins/online',{credentials:'same-origin'}); const j=await r.json(); if(r.ok&&j&&j.ok){ const list=j.admins||[]; render(list); mirror(list); cleanStatuses(); } }catch(e){} }
 function ensureAdminDropdown(){ if(document.getElementById('admin-dropdown')) return; const b=document.createElement('div'); b.id='admin-dropdown'; b.style.position='fixed'; b.style.top='12px'; b.style.right='12px'; b.style.zIndex='9999'; b.innerHTML = '\
 <div style="position:relative">\
-  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ?</button>\
+  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ▾</button>\
   <div id="admMenu" style="position:absolute;right:0;margin-top:6px;background:#0b1020;border:1px solid #374151;border-radius:8px;display:none;min-width:180px;box-shadow:0 10px 20px rgba(0,0,0,0.4)">\
     <a href="/admin/create_user" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">Create User</a>\
     <a href="/admin/dbsafe" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">DB Safe</a>\
@@ -1360,7 +1360,7 @@ def admin_dbsafe():
         vcol = (request.args.get('val_col') or 'value').strip()
     html = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>DB Safe � {tbl}</title>",
+        f"<title>DB Safe – {tbl}</title>",
         "<style>body{font-family:system-ui,Segoe UI,Arial;margin:0;background:#0f172a;color:#e5e7eb}",
         ".wrap{max-width:900px;margin:24px auto;padding:0 12px}",
         ".card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px}",
@@ -1371,7 +1371,7 @@ def admin_dbsafe():
         "a{color:#93c5fd}",
         "</style></head><body>",
         "<div class='wrap'><div class='card'>",
-        f"<h3 style='margin:0 0 12px'>DB Safe � {tbl}</h3>",
+        f"<h3 style='margin:0 0 12px'>DB Safe – {tbl}</h3>",
         "<div class='muted'>Edit values and click Save All. Adds new rows if key is new.</div>",
         "<div id='rows'>",
     ]
@@ -2400,17 +2400,17 @@ def _spam_progressive_sanctions(username: str) -> tuple[bool, str]:
     
     # First violation (1-2 strikes) - Warning
     if strike_count <= 2:
-        return False, "?? Warning: Please follow chat guidelines. Continued violations may result in restrictions."
+        return False, "⚠️ Warning: Please follow chat guidelines. Continued violations may result in restrictions."
     
     # Second violation (3-4 strikes) - Temporary slow mode (30 seconds)
     elif strike_count <= 4:
         spam_slow_until[username] = now + 30
-        return False, "?? Slow mode applied (30 seconds). Please wait before sending another message."
+        return False, "🐌 Slow mode applied (30 seconds). Please wait before sending another message."
     
     # Third violation (5+ strikes) - Extended slow mode (2 minutes)
     elif strike_count >= 5:
         spam_slow_until[username] = now + 120
-        return False, "?? Extended slow mode applied (2 minutes). Multiple violations detected. Please review chat guidelines."
+        return False, "🚫 Extended slow mode applied (2 minutes). Multiple violations detected. Please review chat guidelines."
     
     return True, ""
 
@@ -3284,7 +3284,7 @@ def api_smite():
                     ".muted{color:#9ca3af}.code{font-size:20px;letter-spacing:2px;background:#0b1020;border:1px solid #374151;padding:10px;border-radius:8px;display:flex;gap:8px;align-items:center;justify-content:space-between}"
                     ".btn{padding:8px 10px;border-radius:8px;border:1px solid #374151;background:#2563eb;color:#fff}</style></head><body>"
                     "<div class='card'><h3 style='margin-top:0'>Current downtime code</h3>"
-                    "<div class='code'><span>����������������</span> "
+                    "<div class='code'><span>••••••••••••••••</span> "
                     f"<button class='btn' onclick=\"navigator.clipboard.writeText('{code_once}')\">Copy</button></div>"
                     "<div class='muted' style='margin-top:8px'>Code rotates after each successful unlock.</div>"
                     "</div></body></html>"
@@ -8252,7 +8252,7 @@ def on_send_message(data):
             if isinstance(info, dict):
                 priv = info.get('private') or ''
                 pub = info.get('public') or ''
-                emit("system_message", store_system_message(f"IPs of {target} � private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
+                emit("system_message", store_system_message(f"IPs of {target} — private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
             else:
                 ip = info or ''
                 if ip:
@@ -9098,7 +9098,7 @@ LOGIN_HTML = """
 <html data-default-language="{{ my_language }}" lang="{{ my_language }}">
 <head>
     <meta charset="utf-8">
-    <title>Chatter � Login</title>
+    <title>Chatter — Login</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9131,7 +9131,7 @@ REGISTER_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Chatter � Register</title>
+    <title>Chatter — Register</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9168,98 +9168,361 @@ CHAT_HTML = """
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
     <style>
-      /* Full-Screen Responsive Design - Always show all elements */
+      /* Discord-Inspired Mobile Design - Comfortable and Spacious */
       
-      /* Small phones (up to 480px) - Full screen with scaled elements */
+      /* Small phones (up to 480px) - Discord-like comfortable layout */
       @media (max-width: 480px) {
         .app { 
           display: flex !important; 
           flex-direction: row !important; 
-          gap: 2px !important; 
+          gap: 0 !important; 
           height: 100vh; 
           overflow: hidden;
+          background: var(--bg);
         }
         
-        /* Scale sidebars to fit */
+        /* Left sidebar - Discord server list style */
         #leftbar { 
-          width: 25% !important; 
-          min-width: 80px !important; 
-          max-width: 120px !important;
-          padding: 4px !important;
+          width: 72px !important; 
+          min-width: 72px !important; 
+          max-width: 72px !important;
+          padding: 12px 8px !important;
           overflow-y: auto;
-          font-size: 11px;
-        }
-        #rightbar { 
-          width: 20% !important; 
-          min-width: 60px !important; 
-          max-width: 100px !important;
-          padding: 4px !important;
-          overflow-y: auto;
-          font-size: 11px;
+          font-size: 12px;
+          background: var(--sidebar-bg, #202225);
+          border-right: 1px solid var(--border);
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
         }
         
-        /* Main chat area takes remaining space */
+        /* Right sidebar - Discord member list style */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area - Discord chat style */
         #main { 
           flex: 1 !important; 
           min-width: 0 !important;
-          padding: 2px !important;
+          padding: 0 !important;
           display: flex;
           flex-direction: column;
           height: 100vh;
           overflow: hidden;
-        }
-        
-        /* Chat area with proper scrolling */
-        .chat { 
-          flex: 1;
-          overflow-y: auto;
-          padding: 4px !important;
-          font-size: 13px;
-          line-height: 1.3;
-        }
-        
-        /* Compact form at bottom */
-        .form-row { 
-          flex-shrink: 0;
-          padding: 4px !important;
           background: var(--bg);
         }
         
-        /* Smaller text input but still usable */
-        #textInput { 
-          font-size: 14px !important; 
-          padding: 8px 6px !important; 
-          min-height: 36px !important;
-          border-radius: 6px;
+        /* Chat header area */
+        .chat-header {
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+          flex-shrink: 0;
         }
         
-        /* Compact buttons */
-        #sendForm button { 
-          padding: 8px 10px !important; 
-          min-height: 36px !important; 
-          font-size: 12px !important;
+        /* Chat messages area - Discord message style */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
         }
         
-        /* Smaller sidebar buttons */
-        #leftbar button, #rightbar button { 
-          font-size: 10px !important; 
-          padding: 4px 6px !important;
-          min-height: 32px !important;
-        }
-        
-        /* Compact messages */
+        /* Message styling - Discord-like */
         .message { 
-          font-size: 12px !important; 
-          line-height: 1.3 !important; 
-          padding: 4px !important;
-          margin: 2px 0 !important;
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          border-radius: 0;
+          background: transparent;
+          word-wrap: break-word;
         }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+          border-radius: 0;
+        }
+        
         .username { 
-          font-size: 11px !important; 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+          margin-bottom: 2px;
+          display: inline-block;
+        }
+        
+        /* Input area - Discord-like */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        /* Text input - Discord style */
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          color: var(--text);
+          width: 100%;
+          box-sizing: border-box;
+          resize: none;
+          line-height: 1.4;
+        }
+        
+        #textInput:focus {
+          outline: none;
+          border-color: var(--accent, #5865f2);
+          box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.3);
+        }
+        
+        /* Send button - Discord style */
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
           font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          cursor: pointer;
+          margin-left: 8px;
+          transition: background-color 0.2s ease;
+        }
+        
+        #sendForm button:hover {
+          background: var(--accent-hover, #4752c4) !important;
+        }
+        
+        /* Left sidebar buttons - Discord server icons style */
+        #leftbar button { 
+          font-size: 11px !important; 
+          padding: 8px 4px !important;
+          min-height: 48px !important;
+          width: 48px;
+          border-radius: 50% !important;
+          background: var(--button-bg, #36393f);
+          border: none;
+          color: var(--text);
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          line-height: 1.2;
+          word-break: break-word;
+        }
+        
+        #leftbar button:hover {
+          border-radius: 16px !important;
+          background: var(--accent, #5865f2) !important;
+          color: white;
+        }
+        
+        /* Right sidebar styling - Discord member list */
+        #rightbar button { 
+          font-size: 13px !important; 
+          padding: 8px 12px !important;
+          min-height: 36px !important;
+          width: 100%;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          cursor: pointer;
+          margin-bottom: 4px;
+          text-align: left;
+          transition: background-color 0.2s ease;
+        }
+        
+        #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* User avatars - larger and more prominent */
+        img[style*="border-radius:50%"] {
+          border: 2px solid var(--border) !important;
+        }
+        
+        /* Status indicators - larger and more visible */
+        span[style*="position:absolute"][style*="border-radius:50%"] {
+          width: 12px !important;
+          height: 12px !important;
+          border: 3px solid var(--bg, #36393f) !important;
         }
         
         /* Hide mobile nav - not needed in full screen */
+        #mobileNav { display: none !important; }
+        body { padding-bottom: 0 !important; }
+        
+        /* Scrollbar styling - Discord-like */
+        ::-webkit-scrollbar {
+          width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+          background: rgba(79, 84, 92, 0.3);
+          border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+          background: rgba(79, 84, 92, 0.5);
+        }
+      }
+      
+      /* Regular phones and small tablets (481px to 768px) - Enhanced Discord style */
+      @media (min-width: 481px) and (max-width: 768px) {
+        .app { 
+          display: flex !important; 
+          flex-direction: row !important; 
+          gap: 0 !important; 
+          height: 100vh; 
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Left sidebar - wider on larger phones */
+        #leftbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-right: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Right sidebar - comfortable width */
+        #rightbar { 
+          width: 240px !important; 
+          min-width: 200px !important; 
+          max-width: 280px !important;
+          padding: 16px 12px !important;
+          overflow-y: auto;
+          font-size: 14px;
+          background: var(--sidebar-bg, #2f3136);
+          border-left: 1px solid var(--border);
+          line-height: 1.5;
+        }
+        
+        /* Main chat area */
+        #main { 
+          flex: 1 !important; 
+          min-width: 0 !important;
+          padding: 0 !important;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+          background: var(--bg);
+        }
+        
+        /* Chat messages */
+        .chat { 
+          flex: 1;
+          overflow-y: auto;
+          padding: 16px !important;
+          font-size: 15px !important;
+          line-height: 1.5 !important;
+          background: var(--bg);
+        }
+        
+        .message { 
+          font-size: 15px !important; 
+          line-height: 1.5 !important; 
+          padding: 8px 0 !important;
+          margin: 0 !important;
+          word-wrap: break-word;
+        }
+        
+        .message:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+          margin: 0 -16px !important;
+          padding: 8px 16px !important;
+        }
+        
+        .username { 
+          font-size: 16px !important; 
+          font-weight: 600 !important;
+        }
+        
+        /* Input area */
+        .form-row { 
+          flex-shrink: 0;
+          padding: 16px !important;
+          background: var(--bg);
+          border-top: 1px solid var(--border);
+        }
+        
+        #textInput { 
+          font-size: 15px !important; 
+          padding: 12px 16px !important; 
+          min-height: 44px !important;
+          border-radius: 24px !important;
+          border: 1px solid var(--border);
+          background: var(--input-bg, #40444b);
+          width: 100%;
+          box-sizing: border-box;
+        }
+        
+        #sendForm button { 
+          padding: 12px 20px !important; 
+          min-height: 44px !important; 
+          font-size: 14px !important;
+          font-weight: 600;
+          border-radius: 22px !important;
+          background: var(--accent, #5865f2) !important;
+          border: none;
+          color: white;
+          margin-left: 8px;
+        }
+        
+        /* Sidebar buttons */
+        #leftbar button, #rightbar button { 
+          font-size: 13px !important; 
+          padding: 10px 12px !important;
+          min-height: 40px !important;
+          border-radius: 4px !important;
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--text);
+          width: 100%;
+          text-align: left;
+          margin-bottom: 4px;
+          cursor: pointer;
+          transition: background-color 0.2s ease;
+        }
+        
+        #leftbar button:hover, #rightbar button:hover {
+          background: rgba(79, 84, 92, 0.16) !important;
+        }
+        
+        /* Hide mobile nav */
         #mobileNav { display: none !important; }
         body { padding-bottom: 0 !important; }
       }
@@ -9499,7 +9762,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:6px;align-items:center">
                     <button id="goPublicBtn" type="button" style="padding:4px 8px;font-size:12px;background:#374151"># Public</button>
                     <div style="position:relative;display:inline-block">
-                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ?</button>
+                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ▾</button>
                       <div id="newMenu" style="display:none;position:absolute;right:0;top:100%;background:#0b1020;border:1px solid #374151;border-radius:8px;min-width:180px;z-index:50">
                         <a href="#" id="optNewDM" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Direct Message</a>
                         <a href="#" id="optNewGroup" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Group Chat</a>
@@ -9519,7 +9782,7 @@ CHAT_HTML = """
         <header>
             <h1>
                 <span style="font-size:22px;font-weight:700">Chatter</span>
-                <small>� chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
+                <small>— chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
             </h1>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;">
                 <div class="note">
@@ -9532,11 +9795,11 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
                     {% if username not in superadmins %}
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <a href="/logout" style="color:var(--muted);text-decoration:underline">Log out</a>
                 </div>
@@ -9555,7 +9818,7 @@ CHAT_HTML = """
                         <strong>Replying to <span id="replyUser"></span></strong>
                         <div id="replySnippet" style="color:var(--muted);margin-top:4px;max-width:660px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
                     </div>
-                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">?</button>
+                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">✕</button>
                 </div>
             </div>
             <form id="sendForm" enctype="multipart/form-data">
@@ -9571,8 +9834,8 @@ CHAT_HTML = """
     <div id="pinsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:10005;">
       <div style="position:relative;max-width:680px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
-          <strong>?? Pinned Messages</strong>
-          <button id="closePinsOverlay" type="button" style="padding:6px 10px">?</button>
+          <strong>📌 Pinned Messages</strong>
+          <button id="closePinsOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
       </div>
@@ -9583,7 +9846,7 @@ CHAT_HTML = """
       <div id="adminBox" style="position:relative;max-width:720px;margin:50px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
           <strong>Admin Dashboard</strong>
-          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">?</button>
+          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:16px;color:var(--primary)">
           <div id="idResetDropdown" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card); display:none">
@@ -9606,7 +9869,7 @@ CHAT_HTML = """
               <button id="adminDmCloseAllBtn" type="button" class="btn btn-secondary">Close All My DMs</button>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <input id="adminDmTo" placeholder="send as System ? username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
+              <input id="adminDmTo" placeholder="send as System → username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
               <textarea id="adminDmText" rows="2" placeholder="message text" style="flex:2;min-width:260px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)"></textarea>
               <button id="adminDmSendBtn" type="button" class="btn btn-primary">Send DM as System</button>
             </div>
@@ -9700,7 +9963,7 @@ CHAT_HTML = """
       <div id="chatDialogBox" style="background:var(--card);border:1px solid var(--border);border-radius:12px;max-width:520px;width:92%;box-shadow:0 10px 40px rgba(0,0,0,0.3);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;color:var(--primary)">
           <strong id="chatDialogTitle">Dialog</strong>
-          <button id="chatDialogClose" class="btn btn-outline" type="button">?</button>
+          <button id="chatDialogClose" class="btn btn-outline" type="button">✕</button>
         </div>
         <form id="chatDialogForm" style="padding:14px;display:flex;flex-direction:column;gap:10px"></form>
         <div style="padding:12px 14px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
@@ -9720,7 +9983,7 @@ CHAT_HTML = """
             {% if username in superadmins %}
             <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
             {% endif %}
-            <button id="closeSettings" type="button" class="btn btn-outline">?</button>
+            <button id="closeSettings" type="button" class="btn btn-outline">✕</button>
           </div>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
@@ -9780,8 +10043,8 @@ CHAT_HTML = """
               <div class="note">Bio shows on hover and in DM header. Status affects your presence color.</div>
               <hr style="margin:10px 0;border:none;border-top:1px dashed #ccc">
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button id="markAllReadBtn" type="button" class="btn btn-primary">? Mark All As Read</button>
-                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">?? Clear All Messages</button>
+                <button id="markAllReadBtn" type="button" class="btn btn-primary">✓ Mark All As Read</button>
+                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">🧹 Clear All Messages</button>
               </div>
             </div>
           </div>
@@ -10004,7 +10267,7 @@ CHAT_HTML = """
             row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.marginTop = '6px';
             const hint = document.createElement('div');
             hint.style.color = '#9ca3af'; hint.style.fontSize = '12px';
-            hint.textContent = 'escape to cancel � enter to save � shift+enter for newline';
+            hint.textContent = 'escape to cancel • enter to save • shift+enter for newline';
             const saveBtn = document.createElement('button');
             saveBtn.type = 'button'; saveBtn.className = 'btn btn-primary'; saveBtn.textContent = 'Save';
             row.appendChild(hint); row.appendChild(saveBtn);
@@ -10261,7 +10524,7 @@ CHAT_HTML = """
             });
             // Voice channels
             const v = Array.isArray(voiceChannelsCache)? voiceChannelsCache: [];
-            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">?? ${c}</a></div>`); });
+            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">🔊 ${c}</a></div>`); });
             gdmListEl.innerHTML = list.length ? list.join('') : '<div style="color:#999">No channels</div>';
             // Wire clicks
             gdmListEl.querySelectorAll('a[data-gdm]').forEach(a=>{ a.onclick=(e)=>{ e.preventDefault(); const tid=parseInt(a.getAttribute('data-gdm'),10); if(!isNaN(tid)) openGDM(tid); if (isMobile()) closeOverlays(); }; });
@@ -10617,7 +10880,7 @@ CHAT_HTML = """
           
           pinnedMessageEl.innerHTML = `
             <div style='display:flex;align-items:flex-start;gap:10px'>
-              <div style='font-size:20px'>??</div>
+              <div style='font-size:20px'>📌</div>
               <div style='flex:1;min-width:0'>
                 <div style='display:flex;align-items:center;gap:8px;margin-bottom:4px'>
                   <img src='${mAva}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
@@ -10704,7 +10967,7 @@ CHAT_HTML = """
             try {
                 // Only show if not currently in this DM
                 if (info && info.from && info.to && ((currentMode !== 'dm') || currentPeer !== info.from)) {
-                    globalTypingBar.textContent = `${info.from} is typing in your DM�`;
+                    globalTypingBar.textContent = `${info.from} is typing in your DM…`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('your DM')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10714,7 +10977,7 @@ CHAT_HTML = """
             try {
                 if (info && info.thread_id && ((currentMode !== 'gdm') || currentThreadId !== info.thread_id)) {
                     const name = (gdmThreadsCache[info.thread_id] && gdmThreadsCache[info.thread_id].name) || `Group ${info.thread_id}`;
-                    globalTypingBar.textContent = `${info.from} is typing in ${name}�`;
+                    globalTypingBar.textContent = `${info.from} is typing in ${name}…`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('is typing in')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10723,9 +10986,9 @@ CHAT_HTML = """
 
         function formatTyping(users) {
             if (!users || users.length === 0) return '';
-            if (users.length === 1) return users[0] + ' is typing�';
-            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing�';
-            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing�';
+            if (users.length === 1) return users[0] + ' is typing…';
+            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing…';
+            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing…';
         }
 
         // Load existing messages immediately when connected
@@ -10986,7 +11249,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}${badge}</span>
@@ -11006,7 +11269,7 @@ CHAT_HTML = """
                     return `<div style='display:flex;align-items:center;gap:10px;margin:8px 0;font-size:15px' data-user='${esc(u)}' title='${esc(tooltip)}'>
                         <div style='position:relative'>
                           <img src='${ava}' alt='' style='width:28px;height:28px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                          <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                         </div>
                         <div style='display:flex;flex-direction:column;min-width:0'>
                           <span>${esc(label)}</span>
@@ -11015,9 +11278,9 @@ CHAT_HTML = """
                     </div>`;
                 }).join('');
                 rightOnlineList.innerHTML = `
-                  <div style='font-weight:700;margin:6px 0'>Online � ${online.length}</div>
+                  <div style='font-weight:700;margin:6px 0'>Online — ${online.length}</div>
                   ${online.map(renderUser).join('') || "<div class='note'>No one online</div>"}
-                  <div style='font-weight:700;margin:10px 0 6px'>Offline � ${offline.length}</div>
+                  <div style='font-weight:700;margin:10px 0 6px'>Offline — ${offline.length}</div>
                   ${offline.map(renderUser).join('') || "<div class='note'>No one offline</div>"}
                 `;
 
@@ -11099,7 +11362,7 @@ CHAT_HTML = """
                 <div style='display:flex;flex-direction:column;'>
                   <div style='display:flex;align-items:center;gap:6px;'>
                     <strong>@${p.username||''}</strong>
-                    <span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                    <span style='display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                   </div>
                   <div style='color:#777;white-space:normal;word-break:break-word;overflow-wrap:anywhere;margin-top:4px'>${bio}</div>
                 </div>
@@ -11279,14 +11542,14 @@ CHAT_HTML = """
                   <span style='display:inline-flex;align-items:center;gap:8px;'>
                     <span style='position:relative;display:inline-block'>
                       <img src='${ava}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
-                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};border:2px solid #fff'></span>
+                      <span style='position:absolute;right:-2px;bottom:-2px;display:inline-block;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff'></span>
                     </span>
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
                   </span>
-                  � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                  — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             } catch(e) {
-                modeBar.innerHTML = `DM with ${peer} � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                modeBar.innerHTML = `DM with ${peer} — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             }
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
@@ -11332,7 +11595,7 @@ CHAT_HTML = """
             // Close is per-user local hide
             buttons += `
                 <button id='btnGdmClose' type='button' class='btn btn-secondary'>Close</button>`;
-            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} � ${buttons}`;
+            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} — ${buttons}`;
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
             // reset unread for this group
@@ -11571,7 +11834,7 @@ CHAT_HTML = """
                         );
                     }
                     if (canEdit) {
-                        contextMenu.appendChild(makeItem('? Edit message', () => {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('edit_message', { id: m.id, text: txt }); });
@@ -11579,16 +11842,16 @@ CHAT_HTML = """
                     }
 
                     // Reply
-                    contextMenu.appendChild(makeItem('? Reply', () => {
+                    contextMenu.appendChild(makeItem('↩ Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
                     // Delete item
-                    contextMenu.appendChild(makeItem('?? Delete message', () => {
+                    contextMenu.appendChild(makeItem('🗑 Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
                     // DM Sender
                     if (m.username && m.username !== me) {
-                        contextMenu.appendChild(makeItem('?? DM', () => { openDM(m.username); }));
+                        contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
                     }
                     
                     document.body.appendChild(contextMenu);
@@ -11670,13 +11933,13 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('? Edit DM', () => {
+                    contextMenu.appendChild(makeItem('✏ Edit DM', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                     }));
-                    contextMenu.appendChild(makeItem('? Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('?? Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
+                    contextMenu.appendChild(makeItem('🗑 Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11748,13 +12011,13 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('? Edit message', () => {
+                    contextMenu.appendChild(makeItem('✏ Edit message', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                     }));
-                    contextMenu.appendChild(makeItem('? Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('?? Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
+                    contextMenu.appendChild(makeItem('🗑 Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11801,7 +12064,7 @@ CHAT_HTML = """
                 const secs = Math.max(0, Math.floor(timeoutUntil - Date.now()/1000));
                 const msg = `You are timed out for ${secs} more seconds`;
                 const cur = modeBarNote.textContent || '';
-                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' � ' : '') + msg; }
+                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' — ' : '') + msg; }
             }catch(e){}
 
         // Group lock status UX: banner + disable inputs if locked
@@ -12125,7 +12388,7 @@ CHAT_HTML = """
                 const isLatest = idx === 0;
                 return `
                   <div style='border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px;background:${isLatest ? '#fffbe6' : '#fff'}'>
-                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">?? Latest Pin</div>' : ''}
+                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">📌 Latest Pin</div>' : ''}
                     <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>
                       <img src='${mAva}' alt='' style='width:24px;height:24px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
                       <span style='font-weight:700'>${esc(msg.username)}</span>
@@ -12397,10 +12660,43 @@ CHAT_HTML = """
                   <div id='admOnline' style='display:flex;flex-direction:column;gap:6px;font-size:14px;margin-bottom:8px;max-height:220px;overflow-y:auto'></div>
                 </div>
                 <div id='admEmergencyCard' style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);display:none'>
-                  <h4>Emergency Status</h4>
-                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:4px'></div>
-                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280'></div>
+                  <h4>Emergency Shutdown Control</h4>
+                  <div id='admEmergencyStatus' style='font-size:14px;margin-bottom:8px;font-weight:600'></div>
+                  <div id='admEmergencySnapshot' style='font-size:12px;color:#6b7280;margin-bottom:12px'></div>
+                  
+                  <!-- Emergency Control Buttons -->
+                  <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px'>
+                    <button id='btnEmergencyActivate' type='button' class='btn btn-danger' style='background:#dc2626;color:white'>
+                      🚨 Activate Emergency
+                    </button>
+                    <button id='btnEmergencyDeactivate' type='button' class='btn btn-success' style='background:#16a34a;color:white'>
+                      ✅ Deactivate Emergency
+                    </button>
+                  </div>
+                  
+                  <!-- Recovery Stage Controls -->
+                  <div id='admEmergencyStages' style='display:none;border-top:1px solid var(--border);padding-top:12px'>
+                    <div style='font-size:13px;font-weight:600;margin-bottom:8px'>Recovery Stages:</div>
+                    <div style='display:flex;gap:6px;flex-wrap:wrap'>
+                      <button id='btnStage0' type='button' class='btn btn-sm' data-stage='0'>Stage 0: Full Shutdown</button>
+                      <button id='btnStage1' type='button' class='btn btn-sm' data-stage='1'>Stage 1: Read-Only</button>
+                      <button id='btnStage2' type='button' class='btn btn-sm' data-stage='2'>Stage 2: Chat-Only</button>
+                      <button id='btnStage3' type='button' class='btn btn-sm' data-stage='3'>Stage 3: Full Recovery</button>
+                    </div>
+                  </div>
+                  
+                  <!-- Emergency Logs -->
+                  <div style='border-top:1px solid var(--border);padding-top:12px;margin-top:12px'>
+                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
+                      <span style='font-size:13px;font-weight:600'>Emergency Logs:</span>
+                      <button id='btnRefreshEmergencyLogs' type='button' class='btn btn-sm btn-outline'>Refresh</button>
+                    </div>
+                    <div id='admEmergencyLogs' style='max-height:200px;overflow-y:auto;font-size:12px;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px'>
+                      <div style='color:#6b7280'>Click refresh to load emergency logs...</div>
+                    </div>
+                  </div>
                 </div>
+
                 <div style='border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)'>
                   <h4>Banned IPs</h4>
                   <div id='admBIPs' style='font-size:14px;margin-bottom:8px'></div>
@@ -12788,13 +13084,23 @@ CHAT_HTML = """
                 const cardEl = box.querySelector('#admEmergencyCard');
                 const emStatusEl = box.querySelector('#admEmergencyStatus');
                 const emSnapEl = box.querySelector('#admEmergencySnapshot');
+                const stagesEl = box.querySelector('#admEmergencyStages');
+                
                 if (!cardEl) { /* nothing to do */ }
                 else if (!(emOn || showBlock)) {
                   cardEl.style.display = 'none';
                 } else {
                   cardEl.style.display = '';
                   if (emStatusEl) {
-                    emStatusEl.textContent = emOn ? 'Emergency shutdown: ACTIVE' : 'Emergency shutdown: inactive';
+                    if (emOn) {
+                      emStatusEl.innerHTML = '🚨 <span style="color:#dc2626;font-weight:bold">Emergency shutdown: ACTIVE</span>';
+                      // Show recovery stage controls when emergency is active
+                      if (stagesEl) stagesEl.style.display = '';
+                    } else {
+                      emStatusEl.innerHTML = '✅ <span style="color:#16a34a">Emergency shutdown: inactive</span>';
+                      // Hide recovery stage controls when emergency is inactive
+                      if (stagesEl) stagesEl.style.display = 'none';
+                    }
                   }
                   if (emSnapEl) {
                     const snap = s.EMERGENCY_LAST_SNAPSHOT || '';
@@ -12821,7 +13127,7 @@ CHAT_HTML = """
                   if (tip) return;
                   tip = document.createElement('div');
                   tip.className = 'popover';
-                  tip.textContent = 'DANGER � MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
+                  tip.textContent = 'DANGER — MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
                   tip.style.position = 'fixed';
                   tip.style.left = (e.clientX + 10) + 'px';
                   tip.style.top = (e.clientY + 10) + 'px';
@@ -13144,7 +13450,7 @@ CHAT_HTML = """
                   if (!r.ok){ out.textContent = j.error||'Failed'; return; }
                   const items = j.items||[];
                   out.innerHTML = items.map(m=>`<div style='border-bottom:1px dashed #e5e7eb;padding:4px 0'>
-                    <div style='font-size:12px;color:#6b7280'>#${m.id} � ${m.username} � ${m.created_at}</div>
+                    <div style='font-size:12px;color:#6b7280'>#${m.id} — ${m.username} — ${m.created_at}</div>
                     <div>${m.text}</div>
                   </div>`).join('') || '<span style="color:#666">None</span>';
                 }catch(e){ const out = box.querySelector('#mtHistOut'); if (out) out.textContent = 'Failed'; }
@@ -13187,7 +13493,120 @@ CHAT_HTML = """
               const data = await r.json(); if (!r.ok){ alert(data.error||'Failed'); return;}
               await refreshAll();
             };
+            };
             // User Management wiring
+            
+            // Emergency Control Handlers
+            try {
+              const btnEmergencyActivate = box.querySelector('#btnEmergencyActivate');
+              const btnEmergencyDeactivate = box.querySelector('#btnEmergencyDeactivate');
+              const btnRefreshEmergencyLogs = box.querySelector('#btnRefreshEmergencyLogs');
+              const admEmergencyLogs = box.querySelector('#admEmergencyLogs');
+              const admEmergencyStages = box.querySelector('#admEmergencyStages');
+              
+              if (btnEmergencyActivate) {
+                btnEmergencyActivate.onclick = async () => {
+                  if (!confirm('⚠️ CRITICAL: This will activate emergency shutdown mode and block all user operations. Continue?')) return;
+                  const trigger = prompt('Enter trigger reason (optional):') || 'Manual activation';
+                  try {
+                    const r = await fetch('/api/emergency/activate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ trigger })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to activate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown activated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to activate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              if (btnEmergencyDeactivate) {
+                btnEmergencyDeactivate.onclick = async () => {
+                  if (!confirm('Deactivate emergency shutdown and return to normal operation?')) return;
+                  try {
+                    const r = await fetch('/api/emergency/deactivate', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({})
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to deactivate emergency shutdown'); return; }
+                    alert('✅ Emergency shutdown deactivated successfully');
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to deactivate emergency shutdown: ' + e.message);
+                  }
+                };
+              }
+              
+              // Recovery stage buttons
+              const stageButtons = box.querySelectorAll('[data-stage]');
+              stageButtons.forEach(btn => {
+                btn.onclick = async () => {
+                  const stage = parseInt(btn.dataset.stage);
+                  const stageNames = ['Full Shutdown', 'Read-Only', 'Chat-Only', 'Full Recovery'];
+                  if (!confirm(`Set recovery stage to ${stage}: ${stageNames[stage]}?`)) return;
+                  try {
+                    const r = await fetch('/api/emergency/stage', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify({ stage })
+                    });
+                    const data = await r.json();
+                    if (!r.ok) { alert(data.error || 'Failed to set recovery stage'); return; }
+                    alert(`✅ Recovery stage set to ${stage}: ${stageNames[stage]}`);
+                    await refreshAll();
+                  } catch (e) {
+                    alert('❌ Failed to set recovery stage: ' + e.message);
+                  }
+                };
+              });
+              
+              // Emergency logs refresh
+              if (btnRefreshEmergencyLogs && admEmergencyLogs) {
+                btnRefreshEmergencyLogs.onclick = async () => {
+                  try {
+                    const r = await fetch('/api/emergency/logs');
+                    const data = await r.json();
+                    if (!r.ok) { 
+                      admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + (data.error || 'Unknown error') + '</div>';
+                      return; 
+                    }
+                    
+                    if (!data.logs || data.logs.length === 0) {
+                      admEmergencyLogs.innerHTML = '<div style="color:#6b7280">No emergency logs found.</div>';
+                      return;
+                    }
+                    
+                    const logsHtml = data.logs.map(log => {
+                      const levelColor = {
+                        'CRITICAL': '#dc2626',
+                        'ERROR': '#ea580c', 
+                        'WARNING': '#d97706',
+                        'INFO': '#059669'
+                      }[log.level] || '#6b7280';
+                      
+                      return `<div style="margin-bottom:4px;padding:4px;border-left:3px solid ${levelColor};background:#f9fafb">
+                        <div style="font-weight:600;color:${levelColor}">[${log.level}] ${log.timestamp}</div>
+                        <div style="margin-top:2px">${log.message}</div>
+                        ${log.admin ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">Admin: ${log.admin}</div>` : ''}
+                      </div>`;
+                    }).join('');
+                    
+                    admEmergencyLogs.innerHTML = logsHtml;
+                  } catch (e) {
+                    admEmergencyLogs.innerHTML = '<div style="color:#dc2626">Failed to load logs: ' + e.message + '</div>';
+                  }
+                };
+              }
+            } catch (e) {
+              console.error('Failed to setup emergency controls:', e);
+            }
+
             const umSearch = box.querySelector('#umSearch');
             const umResults = box.querySelector('#umResults');
             const umUser = box.querySelector('#umUser');

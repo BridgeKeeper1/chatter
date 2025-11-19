@@ -7368,10 +7368,6 @@ def on_gdm_join(data):
 def on_gdm_send_v1(data):
     me = session.get('username')
     try:
-            return
-    except Exception:
-        pass
-    try:
         tid = int((data or {}).get('thread_id', 0))
     except Exception:
         tid = 0
@@ -11452,7 +11448,6 @@ CHAT_HTML = """
                     if (canModify) {
                         contextMenu.appendChild(makeItem('🗑️ Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     }
-                    contextMenu.appendChild(makeItem('Delete Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11533,7 +11528,6 @@ CHAT_HTML = """
                     if (canModify) {
                         contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     }
-                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });

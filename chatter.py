@@ -1308,7 +1308,7 @@ def admin_dbsafe():
         vcol = (request.args.get('val_col') or 'value').strip()
     html = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>DB Safe – {tbl}</title>",
+        f"<title>DB Safe - {tbl}</title>",
         "<style>body{font-family:system-ui,Segoe UI,Arial;margin:0;background:#0f172a;color:#e5e7eb}",
         ".wrap{max-width:900px;margin:24px auto;padding:0 12px}",
         ".card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px}",
@@ -1319,7 +1319,7 @@ def admin_dbsafe():
         "a{color:#93c5fd}",
         "</style></head><body>",
         "<div class='wrap'><div class='card'>",
-        f"<h3 style='margin:0 0 12px'>DB Safe – {tbl}</h3>",
+        f"<h3 style='margin:0 0 12px'>DB Safe - {tbl}</h3>",
         "<div class='muted'>Edit values and click Save All. Adds new rows if key is new.</div>",
         "<div id='rows'>",
     ]

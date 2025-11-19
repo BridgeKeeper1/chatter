@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Chatter - Optimized Flask + Socket.IO Chat Application
 Real-time messaging with immediate message delivery and no refresh required
@@ -682,7 +683,7 @@ function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorA
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
-  const isHeader = (t) => /(ONLINE|OFFLINE)\\s*—/i.test(t);
+  const isHeader = (t) => /(ONLINE|OFFLINE)\\s*-/i.test(t);
   const wipe = (node) => { if(node) node.textContent=''; };
   ['.status','.user-status','.presence','.presence-text','.status-text'].forEach(function(q){ root.querySelectorAll(q).forEach(wipe); });
   root.querySelectorAll('span,small,div,p').forEach(function(el){
@@ -8041,7 +8042,7 @@ def on_send_message(data):
             if isinstance(info, dict):
                 priv = info.get('private') or ''
                 pub = info.get('public') or ''
-                emit("system_message", store_system_message(f"IPs of {target} — private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
+                emit("system_message", store_system_message(f"IPs of {target} - private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
             else:
                 ip = info or ''
                 if ip:
@@ -9273,7 +9274,7 @@ LOGIN_HTML = """
 <html data-default-language="{{ my_language }}" lang="{{ my_language }}">
 <head>
     <meta charset="utf-8">
-    <title>Chatter — Login</title>
+    <title>Chatter - Login</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9306,7 +9307,7 @@ REGISTER_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Chatter — Register</title>
+    <title>Chatter - Register</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9400,7 +9401,7 @@ CHAT_HTML = """
         <header>
             <h1>
                 <span style="font-size:22px;font-weight:700">Chatter</span>
-                <small>— chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
+                <small>- chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
             </h1>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;">
                 <div class="note">
@@ -10978,9 +10979,9 @@ CHAT_HTML = """
                     </div>`;
                 }).join('');
                 rightOnlineList.innerHTML = `
-                  <div style='font-weight:700;margin:6px 0'>Online — ${online.length}</div>
+                  <div style='font-weight:700;margin:6px 0'>Online - ${online.length}</div>
                   ${online.map(renderUser).join('') || "<div class='note'>No one online</div>"}
-                  <div style='font-weight:700;margin:10px 0 6px'>Offline — ${offline.length}</div>
+                  <div style='font-weight:700;margin:10px 0 6px'>Offline - ${offline.length}</div>
                   ${offline.map(renderUser).join('') || "<div class='note'>No one offline</div>"}
                 `;
 
@@ -11254,9 +11255,9 @@ CHAT_HTML = """
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
                   </span>
-                  — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                  - <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             } catch(e) {
-                modeBar.innerHTML = `DM with ${peer} — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                modeBar.innerHTML = `DM with ${peer} - <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             }
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
@@ -11302,7 +11303,7 @@ CHAT_HTML = """
             // Close is per-user local hide
             buttons += `
                 <button id='btnGdmClose' type='button' class='btn btn-secondary'>Close</button>`;
-            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} — ${buttons}`;
+            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} - ${buttons}`;
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
             // reset unread for this group
@@ -11781,7 +11782,7 @@ CHAT_HTML = """
                 const secs = Math.max(0, Math.floor(timeoutUntil - Date.now()/1000));
                 const msg = `You are timed out for ${secs} more seconds`;
                 const cur = modeBarNote.textContent || '';
-                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' — ' : '') + msg; }
+                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' - ' : '') + msg; }
             }catch(e){}
 
         // Group lock status UX: banner + disable inputs if locked
@@ -12018,7 +12019,7 @@ CHAT_HTML = """
               document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
             }
             function getCookie(name){
-              const m = document.cookie.match(new RegExp('(?:^|; )'+name.replace(/([.$?*|{}()\[\]\\\/\+^])/g,'\\$1')+'=([^;]*)'));
+              const m = document.cookie.match(new RegExp('(?:^|; )'+name.replace(/([.$?*|{}()\\[\\]\\\\\/\+^])/g,'\\$1')+'=([^;]*)'));
               return m ? decodeURIComponent(m[1]) : '';
             }
             const COOKIE_NAME = 'client_id';
@@ -12949,7 +12950,7 @@ CHAT_HTML = """
                   if (tip) return;
                   tip = document.createElement('div');
                   tip.className = 'popover';
-                  tip.textContent = 'DANGER — MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
+                  tip.textContent = 'DANGER - MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
                   tip.style.position = 'fixed';
                   tip.style.left = (e.clientX + 10) + 'px';
                   tip.style.top = (e.clientY + 10) + 'px';
@@ -13270,7 +13271,7 @@ CHAT_HTML = """
                   if (!r.ok){ out.textContent = j.error||'Failed'; return; }
                   const items = j.items||[];
                   out.innerHTML = items.map(m=>`<div style='border-bottom:1px dashed #e5e7eb;padding:4px 0'>
-                    <div style='font-size:12px;color:#6b7280'>#${m.id} — ${m.username} — ${m.created_at}</div>
+                    <div style='font-size:12px;color:#6b7280'>#${m.id} - ${m.username} - ${m.created_at}</div>
                     <div>${m.text}</div>
                   </div>`).join('') || '<span style="color:#666">None</span>';
                 }catch(e){ const out = box.querySelector('#mtHistOut'); if (out) out.textContent = 'Failed'; }

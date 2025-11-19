@@ -3960,6 +3960,31 @@ def init_db():
         db.commit()
     except Exception:
         pass
+    
+    # Reports table for user reporting system
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT NOT NULL,  -- 'message' or 'user'
+                target_id TEXT,             -- message_id for messages, username for users
+                target_username TEXT,       -- username of reported user
+                reason TEXT NOT NULL,       -- reason code (spam, harassment, etc.)
+                details TEXT,               -- optional additional details
+                reporter_username TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending',  -- pending, reviewed, resolved, dismissed
+                admin_notes TEXT,
+                resolved_at TIMESTAMP,
+                resolved_by TEXT
+            )
+            """
+        )
+        db.commit()
+    except Exception:
+        pass
+
     db.commit()
 
 def recover_failed_username_changes():
@@ -6255,6 +6280,64 @@ def api_users_all():
     cur.execute("SELECT username FROM users ORDER BY LOWER(username) ASC")
     users = [r[0] for r in cur.fetchall()]
     return jsonify(users)
+@app.route("/api/users/search")
+@login_required
+def api_users_search():
+    """Search for users by username prefix"""
+    query = request.args.get('q', '').strip()
+    offset = int(request.args.get('offset', 0))
+    limit = min(int(request.args.get('limit', 20)), 50)  # Max 50 results
+    
+    # Validate query
+    if not query or len(query) < 2:
+        return jsonify({"users": [], "has_more": False, "query": query})
+    
+    # Prevent overly broad searches
+    if len(query) == 1 and query.isalpha():
+        return jsonify({"users": [], "has_more": False, "query": query, "error": "Query too broad"})
+    
+    try:
+        db = get_db()
+        cur = db.cursor()
+        
+        # Search for users with username starting with query (case-insensitive)
+        # Exclude banned users and get additional info
+        cur.execute("""
+            SELECT u.username, u.avatar, u.status, u.created_at, u.bio
+            FROM users u
+            LEFT JOIN banned_users b ON u.username = b.username
+            WHERE LOWER(u.username) LIKE LOWER(?) 
+            AND b.username IS NULL
+            ORDER BY LOWER(u.username) ASC
+            LIMIT ? OFFSET ?
+        """, (f"{query}%", limit + 1, offset))
+        
+        results = cur.fetchall()
+        has_more = len(results) > limit
+        users = results[:limit]
+        
+        # Format user data
+        user_list = []
+        for user in users:
+            user_data = {
+                "username": user[0],
+                "avatar": user[1],
+                "status": user[2] or "offline",
+                "created_at": user[3],
+                "bio": user[4] or ""
+            }
+            user_list.append(user_data)
+        
+        return jsonify({
+            "users": user_list,
+            "has_more": has_more,
+            "query": query,
+            "total_shown": len(user_list)
+        })
+        
+    except Exception as e:
+        return jsonify({"users": [], "has_more": False, "query": query, "error": "Search failed"}), 500
+
 
 @app.route("/api/voice/channels")
 @login_required
@@ -8559,6 +8642,138 @@ def _current_typing_list(exclude=None):
     if exclude:
         users = [u for u in users if u != exclude]
     return users
+# Reporting System Handlers
+@socketio.on("report_message")
+def on_report_message(data):
+    """Handle message reporting"""
+    username = session.get("username")
+    if not username or not _session_user_valid():
+        emit("report_error", {"message": "Authentication required"})
+        return
+    
+    try:
+        message_id = data.get("message_id")
+        reason = data.get("reason", "").strip()
+        details = data.get("details", "").strip()
+        target_username = data.get("target_username", "").strip()
+        
+        if not message_id or not reason or not target_username:
+            emit("report_error", {"message": "Missing required fields"})
+            return
+        
+        # Validate reason
+        valid_reasons = ["spam", "harassment", "hate_speech", "inappropriate", "other"]
+        if reason not in valid_reasons:
+            emit("report_error", {"message": "Invalid reason"})
+            return
+        
+        # Prevent self-reporting
+        if username == target_username:
+            emit("report_error", {"message": "Cannot report yourself"})
+            return
+        
+        # Check for duplicate reports
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            SELECT id FROM reports 
+            WHERE report_type = 'message' AND target_id = ? AND reporter_username = ?
+            AND created_at > datetime('now', '-1 hour')
+        """, (str(message_id), username))
+        
+        if cur.fetchone():
+            emit("report_error", {"message": "You already reported this message recently"})
+            return
+        
+        # Insert report
+        cur.execute("""
+            INSERT INTO reports (report_type, target_id, target_username, reason, details, reporter_username)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, ("message", str(message_id), target_username, reason, details, username))
+        
+        db.commit()
+        
+        emit("report_success", {"message": "Report submitted successfully"})
+        
+        # Notify admins (emit to admin room if they exist)
+        socketio.emit("new_report", {
+            "type": "message",
+            "reporter": username,
+            "target": target_username,
+            "reason": reason
+        }, room="admins")
+        
+    except Exception as e:
+        emit("report_error", {"message": "Failed to submit report"})
+
+@socketio.on("report_user")
+def on_report_user(data):
+    """Handle user reporting"""
+    username = session.get("username")
+    if not username or not _session_user_valid():
+        emit("report_error", {"message": "Authentication required"})
+        return
+    
+    try:
+        target_username = data.get("target_username", "").strip()
+        reason = data.get("reason", "").strip()
+        details = data.get("details", "").strip()
+        
+        if not target_username or not reason:
+            emit("report_error", {"message": "Missing required fields"})
+            return
+        
+        # Validate reason
+        valid_reasons = ["spam", "harassment", "hate_speech", "inappropriate", "impersonation", "other"]
+        if reason not in valid_reasons:
+            emit("report_error", {"message": "Invalid reason"})
+            return
+        
+        # Prevent self-reporting
+        if username == target_username:
+            emit("report_error", {"message": "Cannot report yourself"})
+            return
+        
+        # Check if target user exists
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT username FROM users WHERE username = ?", (target_username,))
+        if not cur.fetchone():
+            emit("report_error", {"message": "User not found"})
+            return
+        
+        # Check for duplicate reports
+        cur.execute("""
+            SELECT id FROM reports 
+            WHERE report_type = 'user' AND target_username = ? AND reporter_username = ?
+            AND created_at > datetime('now', '-24 hours')
+        """, (target_username, username))
+        
+        if cur.fetchone():
+            emit("report_error", {"message": "You already reported this user recently"})
+            return
+        
+        # Insert report
+        cur.execute("""
+            INSERT INTO reports (report_type, target_username, reason, details, reporter_username)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("user", target_username, reason, details, username))
+        
+        db.commit()
+        
+        emit("report_success", {"message": "Report submitted successfully"})
+        
+        # Notify admins
+        socketio.emit("new_report", {
+            "type": "user",
+            "reporter": username,
+            "target": target_username,
+            "reason": reason
+        }, room="admins")
+        
+    except Exception as e:
+        emit("report_error", {"message": "Failed to submit report"})
+
 
 # HTML Templates (unchanged)
 BASE_CSS = """

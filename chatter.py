@@ -228,70 +228,6 @@ def _log_incident(kind: str, meta: dict | None = None):
         pass
 
 # ============================================================================
-# EMERGENCY SHUTDOWN FUNCTIONS
-# ============================================================================
-
-def _is_emergency_shutdown() -> bool:
-    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
-
-    This is used to enforce a global emergency read-only mode.
-    """
-    try:
-        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
-    except Exception:
-        return False
-
-def _emergency_write_block(user: str | None = None) -> bool:
-    """Return True if writes should be blocked for this user due to emergency shutdown.
-
-    Superadmins are allowed to continue making changes so they can manage recovery.
-    """
-    try:
-        if not _is_emergency_shutdown():
-            return False
-        # Allow superadmins to keep writing during emergency
-        try:
-            if user and is_superadmin(user):
-                return False
-        except Exception:
-            pass
-        # Best-effort notification to the user; do not persist
-        try:
-            if user:
-                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-def _maybe_snapshot_db_on_emergency(old_val: str, new_val: str):
-    """When emergency shutdown flips from 0 -> 1, take a best-effort DB snapshot.
-
-    This is intentionally lightweight: it copies the SQLite file and logs the event.
-    """
-    try:
-        if old_val == '0' and new_val == '1':
-            try:
-                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-            except Exception:
-                ts = str(int(time.time()))
-            base = os.path.basename(DB_PATH)
-            snap_name = f"emergency_{ts}_{base}"
-            dest = os.path.join(BACKUP_DIR, snap_name)
-            try:
-                shutil.copy2(DB_PATH, dest)
-            except Exception:
-                # If copy fails, still log the attempt
-                dest = ''
-            meta = {'snapshot': dest or 'failed', 'db_path': DB_PATH}
-            try:
-                u = session.get('username') or ''
-                if u:
-                    meta['actor'] = u
-            except Exception:
-                pass
-            _log_incident('emergency_shutdown', meta)
     except Exception:
         pass
 
@@ -303,185 +239,239 @@ import hashlib
 import difflib
 from collections import defaultdict, deque
 import gzip
+import hashlib
+import time
+import re
+from difflib import SequenceMatcher
 
-# Anti-spam system state - tracks user behavior patterns and sanctions
-antispam_system_state = {
-    'user_behavior': defaultdict(lambda: {
-        'message_history': deque(maxlen=50),  # Recent messages for duplicate detection
-        'message_times': deque(maxlen=100),   # Timestamps for rate analysis
-        'message_lengths': deque(maxlen=20),  # Recent message lengths
-        'sanction_level': 0,                  # 0=none, 1=warning, 2=slow_mode, 3=restricted
-        'sanction_count': defaultdict(int),   # Count of each sanction type
-        'last_sanction_time': 0,              # When last sanction was applied
-        'slow_mode_until': 0,                 # Timestamp when slow mode expires
-        'last_message_time': 0,               # For individual slow mode enforcement
-        'pattern_violations': defaultdict(int), # Track specific pattern violations
-        'warning_count': 0,                   # Number of warnings issued
-    }),
-    'global_stats': {
-        'total_messages_blocked': 0,
-        'total_warnings_issued': 0,
-        'total_slow_modes_applied': 0,
-        'total_restrictions_applied': 0,
-        'last_cleanup_time': time.time(),
-    },
-    'settings_cache': {},  # Cache for anti-spam settings
-    'message_hashes': deque(maxlen=1000),  # Global recent message hashes for duplicate detection
-}
+# ============================================================================
+# COMPREHENSIVE ANTI-SPAM SYSTEM
+# ============================================================================
 
-def _get_antispam_setting(key, default='0'):
-    """Get anti-spam setting with caching"""
-    try:
-        cache_key = f'ANTISPAM_{key}'
-        if cache_key in antispam_system_state['settings_cache']:
-            return antispam_system_state['settings_cache'][cache_key]
+class AntiSpamSystem:
+    def __init__(self):
+        # Configuration
+        self.MAX_MESSAGE_LENGTH = 1000  # Maximum characters per message
+        self.MAX_PAYLOAD_SIZE = 2048    # Maximum bytes per message
+        self.DUPLICATE_WINDOW = 300     # 5 minutes to check for duplicates
+        self.SIMILARITY_THRESHOLD = 0.85  # 85% similarity threshold for near-duplicates
+        self.RATE_LIMIT_WINDOW = 60     # 1 minute window for rate limiting
+        self.MAX_MESSAGES_PER_MINUTE = 10  # Max messages per minute
+        self.SLOW_MODE_DURATION = 10    # 10 seconds slow mode
+        self.AUTO_SPLIT_DELAY = 1       # 1 second delay between auto-split parts
         
-        value = get_setting(cache_key, default)
-        antispam_system_state['settings_cache'][cache_key] = value
-        return value
-    except Exception:
-        return default
-
-def _clear_antispam_settings_cache():
-    """Clear settings cache to force reload"""
-    antispam_system_state['settings_cache'].clear()
-
-def _cleanup_antispam_memory():
-    """Clean up old data to prevent memory leaks"""
-    try:
-        now = time.time()
-        # Only cleanup every 10 minutes
-        if now - antispam_system_state['global_stats']['last_cleanup_time'] < 600:
-            return
+        # User tracking data
+        self.user_message_history = defaultdict(deque)  # Recent message hashes per user
+        self.user_rate_limits = defaultdict(deque)      # Message timestamps per user
+        self.user_violations = defaultdict(int)         # Violation count per user
+        self.user_slow_mode = {}                        # Users in slow mode {user: end_time}
+        self.user_last_message = {}                     # Last message time per user
         
-        # Clean up old user behavior data
-        cutoff_time = now - 3600  # 1 hour ago
-        users_to_remove = []
+        # Violation thresholds for progressive sanctions
+        self.WARNING_THRESHOLD = 1
+        self.SLOW_MODE_THRESHOLD = 2
+        self.RESTRICTED_THRESHOLD = 3
         
-        for username, data in antispam_system_state['user_behavior'].items():
-            # Remove old timestamps
-            while data['message_times'] and data['message_times'][0] < cutoff_time:
-                data['message_times'].popleft()
-            
-            # If user has no recent activity, mark for removal
-            if not data['message_times'] and data['last_message_time'] < cutoff_time:
-                users_to_remove.append(username)
+    def get_message_hash(self, content):
+        """Generate hash for message content"""
+        # Normalize content: lowercase, remove extra whitespace
+        normalized = re.sub(r'\s+', ' ', content.lower().strip())
+        return hashlib.md5(normalized.encode()).hexdigest()
+    
+    def calculate_similarity(self, text1, text2):
+        """Calculate similarity between two texts using fuzzy matching"""
+        return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+    
+    def is_user_in_slow_mode(self, username):
+        """Check if user is currently in slow mode"""
+        if username in self.user_slow_mode:
+            if time.time() < self.user_slow_mode[username]:
+                return True
+            else:
+                # Slow mode expired, remove it
+                del self.user_slow_mode[username]
+        return False
+    
+    def apply_slow_mode(self, username):
+        """Apply slow mode to user"""
+        self.user_slow_mode[username] = time.time() + self.SLOW_MODE_DURATION
+    
+    def check_message_length(self, content):
+        """Check if message exceeds length limit"""
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            return {
+                'blocked': True,
+                'reason': 'message_too_long',
+                'message': f'Message is too long ({len(content)} characters). Maximum allowed: {self.MAX_MESSAGE_LENGTH} characters.',
+                'suggested_action': 'truncate'
+            }
+        return {'blocked': False}
+    
+    def check_payload_size(self, content):
+        """Check if message payload exceeds size limit"""
+        payload_size = len(content.encode('utf-8'))
+        if payload_size > self.MAX_PAYLOAD_SIZE:
+            return {
+                'blocked': True,
+                'reason': 'payload_too_large',
+                'message': f'Message payload is too large ({payload_size} bytes). Maximum allowed: {self.MAX_PAYLOAD_SIZE} bytes.',
+                'suggested_action': 'compress'
+            }
+        return {'blocked': False}
+    
+    def check_duplicate_content(self, username, content):
+        """Check for duplicate or near-duplicate content"""
+        current_time = time.time()
+        message_hash = self.get_message_hash(content)
         
-        # Remove inactive users
-        for username in users_to_remove:
-            del antispam_system_state['user_behavior'][username]
+        # Clean old messages outside the window
+        user_history = self.user_message_history[username]
+        while user_history and current_time - user_history[0]['timestamp'] > self.DUPLICATE_WINDOW:
+            user_history.popleft()
         
-        antispam_system_state['global_stats']['last_cleanup_time'] = now
-    except Exception:
-        pass
-
-def _calculate_message_hash(text, username):
-    """Calculate hash for duplicate detection"""
-    try:
-        # Normalize text for comparison
-        normalized = re.sub(r'\s+', ' ', (text or '').strip().lower())
-        content = f"{username}:{normalized}"
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
-    except Exception:
-        return None
-
-def _fuzzy_similarity(text1, text2):
-    """Calculate fuzzy similarity between two texts (0.0 to 1.0)"""
-    try:
-        if not text1 or not text2:
-            return 0.0
+        # Check for exact duplicates
+        for msg_data in user_history:
+            if msg_data['hash'] == message_hash:
+                return {
+                    'blocked': True,
+                    'reason': 'duplicate_message',
+                    'message': 'This message was already sent recently. Please avoid sending duplicate messages.',
+                    'suggested_action': 'modify'
+                }
         
-        # Normalize texts
-        norm1 = re.sub(r'\s+', ' ', text1.strip().lower())
-        norm2 = re.sub(r'\s+', ' ', text2.strip().lower())
+        # Check for near-duplicates using fuzzy matching
+        for msg_data in user_history:
+            similarity = self.calculate_similarity(content, msg_data['content'])
+            if similarity >= self.SIMILARITY_THRESHOLD:
+                return {
+                    'blocked': True,
+                    'reason': 'similar_message',
+                    'message': f'This message is very similar ({similarity:.0%}) to a recent message. Please avoid sending similar content repeatedly.',
+                    'suggested_action': 'modify'
+                }
         
-        if norm1 == norm2:
-            return 1.0
+        # Store this message in history
+        user_history.append({
+            'hash': message_hash,
+            'content': content,
+            'timestamp': current_time
+        })
         
-        # Use difflib for similarity
-        similarity = difflib.SequenceMatcher(None, norm1, norm2).ratio()
-        return similarity
-    except Exception:
-        return 0.0
-
-def _is_near_duplicate(text, username, threshold=0.85):
-    """Check if message is a near-duplicate of recent messages"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
+        return {'blocked': False}
+    
+    def check_rate_limit(self, username):
+        """Check if user is exceeding rate limits"""
+        current_time = time.time()
+        user_timestamps = self.user_rate_limits[username]
         
-        # Check against user's recent messages
-        for recent_msg in list(user_data['message_history'])[-10:]:  # Check last 10 messages
-            similarity = _fuzzy_similarity(text, recent_msg)
-            if similarity >= threshold:
-                return True, similarity
+        # Clean old timestamps outside the window
+        while user_timestamps and current_time - user_timestamps[0] > self.RATE_LIMIT_WINDOW:
+            user_timestamps.popleft()
         
-        return False, 0.0
-    except Exception:
-        return False, 0.0
-
-def _compress_and_measure(text):
-    """Compress text and measure payload size"""
-    try:
-        if not text:
-            return 0, 0
+        # Check if user exceeds rate limit
+        if len(user_timestamps) >= self.MAX_MESSAGES_PER_MINUTE:
+            return {
+                'blocked': True,
+                'reason': 'rate_limit_exceeded',
+                'message': f'You are sending messages too quickly. Please wait before sending another message.',
+                'suggested_action': 'wait'
+            }
         
-        original_size = len(text.encode('utf-8'))
-        compressed = gzip.compress(text.encode('utf-8'))
-        compressed_size = len(compressed)
+        # Add current timestamp
+        user_timestamps.append(current_time)
+        return {'blocked': False}
+    
+    def check_slow_mode_violation(self, username):
+        """Check if user is violating slow mode"""
+        if self.is_user_in_slow_mode(username):
+            remaining_time = int(self.user_slow_mode[username] - time.time())
+            return {
+                'blocked': True,
+                'reason': 'slow_mode_active',
+                'message': f'You are in slow mode. Please wait {remaining_time} seconds before sending another message.',
+                'suggested_action': 'wait'
+            }
         
-        return original_size, compressed_size
-    except Exception:
-        return 0, 0
-
-def _detect_suspicious_patterns(text):
-    """Detect suspicious content patterns"""
-    try:
-        if not text:
-            return []
+        # Check if user needs slow mode applied based on recent activity
+        if username in self.user_last_message:
+            time_since_last = time.time() - self.user_last_message[username]
+            if time_since_last < self.AUTO_SPLIT_DELAY:
+                return {
+                    'blocked': True,
+                    'reason': 'sending_too_fast',
+                    'message': f'Please wait {self.AUTO_SPLIT_DELAY - time_since_last:.1f} seconds before sending another message.',
+                    'suggested_action': 'wait'
+                }
         
-        violations = []
+        self.user_last_message[username] = time.time()
+        return {'blocked': False}
+    
+    def analyze_content_patterns(self, content):
+        """Analyze content for suspicious patterns"""
+        issues = []
         
-        # Excessive whitespace
-        whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
+        # Check for excessive whitespace
+        whitespace_ratio = len(re.findall(r'\s', content)) / len(content) if content else 0
         if whitespace_ratio > 0.7:
-            violations.append('excessive_whitespace')
+            issues.append('excessive_whitespace')
         
-        # HTML/CSS patterns
-        html_tags = len(re.findall(r'<[^>]+>', text))
-        if html_tags > 10:
-            violations.append('excessive_html')
+        # Check for repeated characters (but not common letters/words)
+        # Only flag if same character repeated more than 10 times consecutively
+        repeated_chars = re.findall(r'(.)\1{10,}', content)
+        if repeated_chars:
+            # Don't block common letters if they're part of normal words
+            suspicious_repeats = []
+            for char_match in repeated_chars:
+                char = char_match
+                # Only flag if it's not a common letter in a reasonable context
+                if not re.search(rf'[a-zA-Z]{char}{{10,}}[a-zA-Z]', content):
+                    suspicious_repeats.append(char)
+            if suspicious_repeats:
+                issues.append('excessive_character_repetition')
         
-        # Repeated structures
-        div_count = len(re.findall(r'<div[^>]*>', text, re.IGNORECASE))
-        script_count = len(re.findall(r'<script[^>]*>', text, re.IGNORECASE))
-        br_count = len(re.findall(r'<br[^>]*>', text, re.IGNORECASE))
+        # Check for HTML/CSS/Script injection patterns
+        html_patterns = [
+            r'<script[^>]*>',
+            r'<div[^>]*>.*</div>',
+            r'<br\s*/?>.*<br\s*/?>.*<br\s*/?>',  # Multiple line breaks
+            r'style\s*=\s*["\'][^"\']*["\']',
+            r'javascript:',
+            r'on\w+\s*=\s*["\'][^"\']*["\']'  # Event handlers
+        ]
         
-        if div_count > 5:
-            violations.append('excessive_divs')
-        if script_count > 0:
-            violations.append('script_tags')
-        if br_count > 20:
-            violations.append('excessive_breaks')
+        for pattern in html_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                issues.append('suspicious_html_content')
+                break
         
-        # Code block patterns
-        code_blocks = len(re.findall(r'```[\s\S]*?```', text))
+        # Check for code block spam (multiple code blocks)
+        code_blocks = len(re.findall(r'```[\s\S]*?```', content))
         if code_blocks > 3:
-            violations.append('excessive_code_blocks')
+            issues.append('excessive_code_blocks')
         
-        return violations
-    except Exception:
-        return []
-
-def _split_message_intelligently(text, max_length=800):
-    """Split message by paragraphs and line breaks"""
-    try:
-        if not text or len(text) <= max_length:
-            return [text] if text else []
+        if issues:
+            return {
+                'blocked': True,
+                'reason': 'suspicious_content_pattern',
+                'message': f'Message contains suspicious patterns: {", ".join(issues)}. Please review your message.',
+                'suggested_action': 'modify',
+                'issues': issues
+            }
+        
+        return {'blocked': False}
+    
+    def auto_split_message(self, content, max_length=None):
+        """Auto-split large messages into smaller parts"""
+        if max_length is None:
+            max_length = self.MAX_MESSAGE_LENGTH
+        
+        if len(content) <= max_length:
+            return [content]
         
         parts = []
         
-        # First try splitting by double newlines (paragraphs)
-        paragraphs = text.split('\n\n')
+        # Try to split by paragraphs first
+        paragraphs = content.split('\n\n')
         current_part = ""
         
         for paragraph in paragraphs:
@@ -489,107 +479,146 @@ def _split_message_intelligently(text, max_length=800):
                 current_part += paragraph + '\n\n'
             else:
                 if current_part:
-                    parts.append(current_part.strip())
+                    parts.append(current_part.rstrip())
                     current_part = ""
                 
-                # If paragraph itself is too long, split by single newlines
+                # If single paragraph is too long, split by sentences
                 if len(paragraph) > max_length:
-                    lines = paragraph.split('\n')
-                    for line in lines:
-                        if len(current_part + line) <= max_length:
-                            current_part += line + '\n'
+                    sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                    for sentence in sentences:
+                        if len(current_part + sentence) <= max_length:
+                            current_part += sentence + ' '
                         else:
                             if current_part:
-                                parts.append(current_part.strip())
-                            current_part = line + '\n'
+                                parts.append(current_part.rstrip())
+                            current_part = sentence + ' '
                 else:
                     current_part = paragraph + '\n\n'
         
         if current_part:
-            parts.append(current_part.strip())
+            parts.append(current_part.rstrip())
         
         return parts
-    except Exception:
-        return [text] if text else []
-
-def _apply_progressive_sanction(username, violation_type):
-    """Apply progressive sanctions based on user behavior"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        # Increment violation count
-        user_data['sanction_count'][violation_type] += 1
-        total_violations = sum(user_data['sanction_count'].values())
-        
-        # Determine sanction level based on total violations
-        if total_violations == 1:
-            # First violation - warning
-            user_data['sanction_level'] = 1
-            user_data['warning_count'] += 1
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_warnings_issued'] += 1
-            return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
-        
-        elif total_violations <= 3:
-            # Second/third violation - slow mode
-            user_data['sanction_level'] = 2
-            slow_duration = min(10 + (total_violations * 5), 60)  # 10-60 seconds
-            user_data['slow_mode_until'] = now + slow_duration
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
-            return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
-        
-        else:
-            # Fourth+ violation - restricted state
-            user_data['sanction_level'] = 3
-            restriction_duration = min(300 + (total_violations * 60), 1800)  # 5-30 minutes
-            user_data['slow_mode_until'] = now + restriction_duration
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_restrictions_applied'] += 1
-            return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
     
-    except Exception:
-        return 'warning', "⚠️ Please avoid spamming."
+    def apply_progressive_sanctions(self, username, violation_reason):
+        """Apply progressive sanctions based on violation history"""
+        self.user_violations[username] += 1
+        violation_count = self.user_violations[username]
+        
+        if violation_count == self.WARNING_THRESHOLD:
+            return {
+                'sanction': 'warning',
+                'message': 'Warning: Please follow the chat guidelines to avoid further restrictions.',
+                'action': 'warn'
+            }
+        elif violation_count == self.SLOW_MODE_THRESHOLD:
+            self.apply_slow_mode(username)
+            return {
+                'sanction': 'slow_mode',
+                'message': f'Slow mode applied for {self.SLOW_MODE_DURATION} seconds due to repeated violations.',
+                'action': 'slow_mode'
+            }
+        elif violation_count >= self.RESTRICTED_THRESHOLD:
+            return {
+                'sanction': 'restricted',
+                'message': 'Account temporarily restricted due to multiple violations. Please contact an administrator.',
+                'action': 'restrict'
+            }
+        
+        return {'sanction': 'none', 'action': 'none'}
+    
+    def validate_message(self, username, content):
+        """Main validation function - checks all anti-spam rules"""
+        # Check if user is in slow mode
+        slow_mode_check = self.check_slow_mode_violation(username)
+        if slow_mode_check['blocked']:
+            return slow_mode_check
+        
+        # Check message length
+        length_check = self.check_message_length(content)
+        if length_check['blocked']:
+            sanctions = self.apply_progressive_sanctions(username, 'message_too_long')
+            length_check['sanctions'] = sanctions
+            return length_check
+        
+        # Check payload size
+        payload_check = self.check_payload_size(content)
+        if payload_check['blocked']:
+            sanctions = self.apply_progressive_sanctions(username, 'payload_too_large')
+            payload_check['sanctions'] = sanctions
+            return payload_check
+        
+        # Check for duplicates
+        duplicate_check = self.check_duplicate_content(username, content)
+        if duplicate_check['blocked']:
+            sanctions = self.apply_progressive_sanctions(username, duplicate_check['reason'])
+            duplicate_check['sanctions'] = sanctions
+            return duplicate_check
+        
+        # Check rate limits
+        rate_check = self.check_rate_limit(username)
+        if rate_check['blocked']:
+            sanctions = self.apply_progressive_sanctions(username, 'rate_limit_exceeded')
+            rate_check['sanctions'] = sanctions
+            return rate_check
+        
+        # Check content patterns
+        pattern_check = self.analyze_content_patterns(content)
+        if pattern_check['blocked']:
+            sanctions = self.apply_progressive_sanctions(username, 'suspicious_content')
+            pattern_check['sanctions'] = sanctions
+            return pattern_check
+        
+        # All checks passed
+        return {
+            'blocked': False,
+            'message': 'Message approved',
+            'auto_split': self.auto_split_message(content) if len(content) > self.MAX_MESSAGE_LENGTH else None
+        }
+    
+    def get_user_status(self, username):
+        """Get current status of a user"""
+        return {
+            'violations': self.user_violations.get(username, 0),
+            'in_slow_mode': self.is_user_in_slow_mode(username),
+            'slow_mode_remaining': max(0, int(self.user_slow_mode.get(username, 0) - time.time())) if username in self.user_slow_mode else 0,
+            'recent_messages': len(self.user_message_history.get(username, [])),
+            'rate_limit_usage': len(self.user_rate_limits.get(username, []))
+        }
+    
+    def reset_user_violations(self, username):
+        """Reset violation count for a user (admin function)"""
+        self.user_violations[username] = 0
+        if username in self.user_slow_mode:
+            del self.user_slow_mode[username]
+    
+    def cleanup_old_data(self):
+        """Clean up old tracking data to prevent memory leaks"""
+        current_time = time.time()
+        
+        # Clean message history
+        for username in list(self.user_message_history.keys()):
+            user_history = self.user_message_history[username]
+            while user_history and current_time - user_history[0]['timestamp'] > self.DUPLICATE_WINDOW:
+                user_history.popleft()
+            if not user_history:
+                del self.user_message_history[username]
+        
+        # Clean rate limit data
+        for username in list(self.user_rate_limits.keys()):
+            user_timestamps = self.user_rate_limits[username]
+            while user_timestamps and current_time - user_timestamps[0] > self.RATE_LIMIT_WINDOW:
+                user_timestamps.popleft()
+            if not user_timestamps:
+                del self.user_rate_limits[username]
+        
+        # Clean expired slow modes
+        for username in list(self.user_slow_mode.keys()):
+            if current_time >= self.user_slow_mode[username]:
+                del self.user_slow_mode[username]
 
-def _is_user_in_slow_mode(username):
-    """Check if user is currently in slow mode"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        if user_data['slow_mode_until'] > now:
-            remaining = int(user_data['slow_mode_until'] - now)
-            return True, remaining
-        
-        return False, 0
-    except Exception:
-        return False, 0
-
-def _should_apply_individual_slow_mode(username):
-    """Check if individual slow mode should be applied based on behavior"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        # Check recent message frequency
-        recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
-        
-        if len(recent_messages) >= 10:  # 10+ messages in last minute
-            return True, "🐌 Automatic slow mode: Too many messages in a short time."
-        
-        # Check for rapid large messages
-        recent_large = 0
-        for i, length in enumerate(list(user_data['message_lengths'])[-5:]):
-            if length > 500:  # Large message
-                recent_large += 1
-        
-        if recent_large >= 3:  # 3+ large messages recently
-            return True, "🐌 Automatic slow mode: Multiple large messages detected."
-        
-        return False, ""
-    except Exception:
-        return False, ""
+# Global instance
+anti_spam = AntiSpamSystem()
 
 def antispam_check_message(username, text, message_type="public", has_attachment=False):
     """
@@ -600,114 +629,41 @@ def antispam_check_message(username, text, message_type="public", has_attachment
     """
     try:
         # Clean up memory periodically
-        _cleanup_antispam_memory()
+        anti_spam.cleanup_old_data()
         
-        # Check if anti-spam is enabled
-        if _get_antispam_setting('ENABLED', '1') != '1':
-            return True, "", [text] if text else []
-        
-        # Skip checks for superadmins if configured
-        try:
-            if _get_antispam_setting('SKIP_SUPERADMINS', '1') == '1' and is_superadmin(username):
-                return True, "", [text] if text else []
-        except Exception:
-            pass
-        
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        # Update user activity
-        user_data['last_message_time'] = now
-        user_data['message_times'].append(now)
-        if text:
-            user_data['message_lengths'].append(len(text))
-        
-        # 1. CHECK SLOW MODE STATUS
-        in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
-        if in_slow_mode:
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
-        
-        # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
-        should_slow, slow_msg = _should_apply_individual_slow_mode(username)
-        if should_slow:
-            user_data['slow_mode_until'] = now + 10  # 10 second cooldown
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, slow_msg, []
-        
-        # Skip further checks for empty messages with attachments
+        # Skip checks for empty messages with attachments
         if not text and has_attachment:
             return True, "", []
         
         if not text:
             return True, "", []
         
-        # 3. MESSAGE LENGTH LIMITS
-        max_length = int(_get_antispam_setting('MAX_MESSAGE_LENGTH', '1000'))
-        if len(text) > max_length:
-            # Check if auto-split is enabled
-            if _get_antispam_setting('AUTO_SPLIT_ENABLED', '1') == '1':
-                split_parts = _split_message_intelligently(text, max_length)
-                if len(split_parts) > 1:
-                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-            
-            # Apply sanction for oversized message
-            sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
+        # Validate the message
+        result = anti_spam.validate_message(username, text)
         
-        # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
-        if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
-            is_duplicate, similarity = _is_near_duplicate(text, username)
-            if is_duplicate:
-                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
-                antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
-        
-        # 5. PAYLOAD SIZE MONITORING
-        if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
-            original_size, compressed_size = _compress_and_measure(text)
-            max_payload = int(_get_antispam_setting('MAX_PAYLOAD_SIZE', '10000'))
-            
-            if original_size > max_payload:
-                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
-                antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Message payload too large. {sanction_msg}", []
-        
-        # 6. CONTENT PATTERN ANALYSIS
-        if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
-            violations = _detect_suspicious_patterns(text)
-            if violations:
-                # Track pattern violations
-                for violation in violations:
-                    user_data['pattern_violations'][violation] += 1
-                
-                # Apply sanction if too many pattern violations
-                total_pattern_violations = sum(user_data['pattern_violations'].values())
-                if total_pattern_violations >= 3:
-                    sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
-                    antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                    return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
-        
-        # Store message in history for future duplicate detection
-        user_data['message_history'].append(text)
-        
-        # Calculate and store message hash
-        msg_hash = _calculate_message_hash(text, username)
-        if msg_hash:
-            antispam_system_state['message_hashes'].append(msg_hash)
-        
-        # Message passed all checks
-        return True, "", [text]
+        if result['blocked']:
+            # Message blocked
+            message = result['message']
+            if 'sanctions' in result and result['sanctions']['action'] != 'none':
+                message += f" {result['sanctions']['message']}"
+            return False, message, []
+        else:
+            # Message approved
+            if result.get('auto_split'):
+                return True, f"Message will be split into {len(result['auto_split'])} parts.", result['auto_split']
+            else:
+                return True, "", [text]
         
     except Exception as e:
         # On error, allow message but log the issue
-        try:
-            _log_incident('antispam_error', {'username': username, 'error': str(e)})
-        except Exception:
-            pass
         return True, "", [text] if text else []
 
+# ============================================================================
+# END ANTI-SPAM SYSTEM
+# ============================================================================
+
+
+# Anti-spam system state - tracks user behavior patterns and sanctions
 # ---- Admins UI script injection (registered later to avoid NameError) ----
 def _inject_admins_js(resp):
     # No-op: do not inject Admins section into right sidebar
@@ -1890,24 +1846,8 @@ def set_setting(key: str, value: str):
     try:
         _ensure_app_settings()
         db = get_db(); cur = db.cursor()
-        # For emergency toggle, read old value so we can detect 0->1 transitions
-        old_val = None
-        try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
-                cur.execute('SELECT value FROM app_settings WHERE key=?', (key,))
-                row = cur.fetchone()
-                if row is not None:
-                    old_val = row[0] if not isinstance(row, sqlite3.Row) else row['value']
-        except Exception:
-            old_val = None
         cur.execute('INSERT OR REPLACE INTO app_settings(key, value) VALUES(?,?)', (key, str(value)))
         db.commit()
-        try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
-                _maybe_snapshot_db_on_emergency(str(old_val or '0'), str(value))
-        except Exception:
-            pass
-        return True
     except Exception:
         return False
 
@@ -2145,431 +2085,6 @@ voice_channels = defaultdict(set)  # channel -> set(usernames)
 # ============================================================================
 
 # Anti-spam tracking data structures
-antispam_user_data = defaultdict(lambda: {
-    'message_history': [],  # [(timestamp, channel_type), ...]
-    'content_hashes': [],   # [(timestamp, content_hash), ...]
-    'recent_messages': [],  # [(timestamp, normalized_content, channel_type), ...]
-    'violation_count': 0,
-    'violation_timestamp': 0,
-    'slow_mode_until': 0,
-    'block_until': 0,
-    'last_message_time': 0,
-    'consecutive_large_messages': 0,
-    'pattern_violations': 0
-})
-
-# Anti-spam configuration with defaults
-ANTISPAM_CONFIG = {
-    'MAX_MESSAGE_LENGTH': 1000,
-    'MAX_MESSAGE_BYTES': 4000,
-    'RATE_LIMIT_WINDOW': 10.0,
-    'RATE_LIMIT_MAX_MESSAGES': 8,
-    'MIN_MESSAGE_GAP': 0.7,
-    'DUPLICATE_WINDOW': 60.0,
-    'SIMILARITY_THRESHOLD': 0.85,
-    'SLOW_MODE_DURATION': 10.0,
-    'BLOCK_DURATION_SHORT': 30.0,
-    'BLOCK_DURATION_LONG': 300.0,
-    'VIOLATION_DECAY_TIME': 300.0,
-    'AUTO_SPLIT_THRESHOLD': 500,
-    'AUTO_SPLIT_MAX_PARTS': 5,
-    'PATTERN_HTML_TAG_LIMIT': 10,
-    'PATTERN_BR_TAG_LIMIT': 20,
-    'PATTERN_NEWLINE_LIMIT': 50,
-    'PATTERN_WHITESPACE_RATIO': 0.7
-}
-
-def _load_antispam_config():
-    """Load anti-spam configuration from settings with fallbacks"""
-    config = ANTISPAM_CONFIG.copy()
-    try:
-        config['MAX_MESSAGE_LENGTH'] = int(get_setting('ANTISPAM_MAX_LENGTH', str(config['MAX_MESSAGE_LENGTH'])))
-        config['MAX_MESSAGE_BYTES'] = int(get_setting('ANTISPAM_MAX_BYTES', str(config['MAX_MESSAGE_BYTES'])))
-        config['RATE_LIMIT_WINDOW'] = float(get_setting('ANTISPAM_RATE_WINDOW', str(config['RATE_LIMIT_WINDOW'])))
-        config['RATE_LIMIT_MAX_MESSAGES'] = int(get_setting('ANTISPAM_RATE_MAX', str(config['RATE_LIMIT_MAX_MESSAGES'])))
-        config['MIN_MESSAGE_GAP'] = float(get_setting('ANTISPAM_MIN_GAP', str(config['MIN_MESSAGE_GAP'])))
-        config['SLOW_MODE_DURATION'] = float(get_setting('ANTISPAM_SLOW_DURATION', str(config['SLOW_MODE_DURATION'])))
-    except Exception:
-        pass
-    return config
-
-def _normalize_content(text):
-    """Normalize text content for comparison, avoiding over-normalization"""
-    if not text:
-        return ""
-    
-    # Basic normalization - preserve structure but normalize whitespace
-    normalized = ' '.join(text.strip().split())
-    
-    # Don't normalize single characters or very short messages to avoid blocking common letters
-    if len(normalized) <= 3:
-        return normalized
-    
-    return normalized.lower()
-
-def _generate_content_hash(content):
-    """Generate a hash for content deduplication"""
-    if not content:
-        return ""
-    normalized = _normalize_content(content)
-    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
-
-def _check_message_length(content, config):
-    """Check if message exceeds length limits"""
-    if not content:
-        return True, None
-    
-    char_count = len(content)
-    byte_count = len(content.encode('utf-8'))
-    
-    if char_count > config['MAX_MESSAGE_LENGTH']:
-        return False, f"Message too long ({char_count} characters). Maximum allowed: {config['MAX_MESSAGE_LENGTH']} characters."
-    
-    if byte_count > config['MAX_MESSAGE_BYTES']:
-        return False, f"Message too large ({byte_count} bytes). Maximum allowed: {config['MAX_MESSAGE_BYTES']} bytes."
-    
-    return True, None
-
-def _check_payload_size(content, config):
-    """Check payload size using compression to detect encoded spam"""
-    if not content or len(content) < 200:
-        return True, None
-    
-    try:
-        # Compress content to detect large encoded payloads
-        compressed = zlib.compress(content.encode('utf-8'), level=3)
-        if len(compressed) > config['MAX_MESSAGE_BYTES']:
-            return False, "Message appears to contain large encoded data. Please send as a file instead."
-    except Exception:
-        pass
-    
-    return True, None
-
-def _check_rate_limiting(username, channel_type, config):
-    """Check if user is sending messages too quickly"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Clean old history
-    window = config['RATE_LIMIT_WINDOW']
-    user_data['message_history'] = [
-        (ts, ch) for ts, ch in user_data['message_history'] 
-        if now - ts <= window
-    ]
-    
-    # Check minimum gap between messages
-    if user_data['last_message_time'] and (now - user_data['last_message_time']) < config['MIN_MESSAGE_GAP']:
-        return False, f"Please wait {config['MIN_MESSAGE_GAP']} seconds between messages."
-    
-    # Check maximum messages per window
-    recent_count = len(user_data['message_history'])
-    if recent_count >= config['RATE_LIMIT_MAX_MESSAGES']:
-        return False, f"Too many messages in {window} seconds. Please slow down."
-    
-    return True, None
-
-def _check_duplicate_content(username, content, channel_type, config):
-    """Check for duplicate or near-duplicate content"""
-    if not content or len(content) <= 10:  # Skip very short messages
-        return True, None
-    
-    user_data = antispam_user_data[username]
-    now = time.time()
-    normalized = _normalize_content(content)
-    
-    # Clean old content history
-    window = config['DUPLICATE_WINDOW']
-    user_data['recent_messages'] = [
-        (ts, msg, ch) for ts, msg, ch in user_data['recent_messages']
-        if now - ts <= window
-    ]
-    
-    # Check for exact duplicates
-    for ts, prev_content, prev_channel in user_data['recent_messages']:
-        if normalized == prev_content:
-            return False, "Duplicate message detected. Please avoid repeating the same content."
-    
-    # Check for near-duplicates (only for longer messages to avoid false positives)
-    if len(normalized) >= 20:
-        for ts, prev_content, prev_channel in user_data['recent_messages']:
-            if len(prev_content) >= 20:
-                try:
-                    similarity = difflib.SequenceMatcher(None, normalized, prev_content).ratio()
-                    if similarity > config['SIMILARITY_THRESHOLD']:
-                        return False, "Very similar message detected. Please avoid minor variations of the same content."
-                except Exception:
-                    pass
-    
-    return True, None
-
-def _check_content_patterns(content, config):
-    """Analyze content for suspicious patterns"""
-    if not content:
-        return True, None
-    
-    lower_content = content.lower()
-    
-    # Check for HTML/script injection patterns
-    html_tags = ['<div', '<script', '<style', '<html', '<body', '<iframe', '<object', '<embed']
-    tag_count = sum(lower_content.count(tag) for tag in html_tags)
-    
-    if tag_count >= config['PATTERN_HTML_TAG_LIMIT']:
-        return False, "Message contains too many HTML tags. Please send as a file or remove HTML content."
-    
-    # Check for excessive line breaks
-    br_count = lower_content.count('<br')
-    newline_count = content.count('\n')
-    
-    if br_count >= config['PATTERN_BR_TAG_LIMIT'] or newline_count >= config['PATTERN_NEWLINE_LIMIT']:
-        return False, "Message contains excessive line breaks. Please format your content more concisely."
-    
-    # Check for excessive whitespace (but not single character repetition)
-    if len(content) > 50:  # Only check longer messages
-        whitespace_count = sum(1 for c in content if c.isspace())
-        whitespace_ratio = whitespace_count / len(content)
-        
-        if whitespace_ratio > config['PATTERN_WHITESPACE_RATIO']:
-            return False, "Message contains excessive whitespace. Please format your content properly."
-    
-    return True, None
-
-def _auto_split_message(content, config):
-    """Automatically split large messages if appropriate"""
-    if not content or len(content) <= config['AUTO_SPLIT_THRESHOLD']:
-        return [content] if content else []
-    
-    # Try to split by paragraphs first
-    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
-    if len(paragraphs) > 1 and len(paragraphs) <= config['AUTO_SPLIT_MAX_PARTS']:
-        # Check if each part is reasonable size
-        if all(len(p) <= config['MAX_MESSAGE_LENGTH'] for p in paragraphs):
-            return paragraphs
-    
-    # Try to split by sentences
-    sentences = [s.strip() + '.' for s in content.split('.') if s.strip()]
-    if len(sentences) > 1 and len(sentences) <= config['AUTO_SPLIT_MAX_PARTS']:
-        if all(len(s) <= config['MAX_MESSAGE_LENGTH'] for s in sentences):
-            return sentences
-    
-    # Try to split by lines
-    lines = [line.strip() for line in content.split('\n') if line.strip()]
-    if len(lines) > 1 and len(lines) <= config['AUTO_SPLIT_MAX_PARTS']:
-        if all(len(line) <= config['MAX_MESSAGE_LENGTH'] for line in lines):
-            return lines
-    
-    # If can't split reasonably, return as single message (will be rejected by length check)
-    return [content]
-
-def _apply_progressive_sanctions(username, violation_type, config):
-    """Apply progressive sanctions based on violation history"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Decay old violations
-    if user_data['violation_timestamp'] and (now - user_data['violation_timestamp']) > config['VIOLATION_DECAY_TIME']:
-        user_data['violation_count'] = max(0, user_data['violation_count'] - 1)
-    
-    # Record new violation
-    user_data['violation_count'] += 1
-    user_data['violation_timestamp'] = now
-    
-    violation_count = user_data['violation_count']
-    
-    if violation_count >= 3:
-        # Third violation: Temporary block
-        user_data['block_until'] = now + config['BLOCK_DURATION_LONG']
-        return False, f"You have been temporarily blocked for {config['BLOCK_DURATION_LONG']/60:.1f} minutes due to repeated violations."
-    elif violation_count >= 2:
-        # Second violation: Slow mode
-        user_data['slow_mode_until'] = now + config['SLOW_MODE_DURATION']
-        return False, f"Slow mode enabled for {config['SLOW_MODE_DURATION']} seconds. Please wait before sending another message."
-    else:
-        # First violation: Warning
-        return False, f"Warning: Please follow the chat guidelines. Further violations may result in restrictions."
-
-def _check_user_restrictions(username, config):
-    """Check if user is currently under restrictions"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Check temporary block
-    if user_data['block_until'] > now:
-        remaining = int(user_data['block_until'] - now)
-        return False, f"You are temporarily blocked. Time remaining: {remaining} seconds."
-    elif user_data['block_until'] > 0:
-        user_data['block_until'] = 0  # Clear expired block
-    
-    # Check slow mode
-    if user_data['slow_mode_until'] > now:
-        remaining = int(user_data['slow_mode_until'] - now)
-        return False, f"Slow mode active. Please wait {remaining} seconds before sending another message."
-    elif user_data['slow_mode_until'] > 0:
-        user_data['slow_mode_until'] = 0  # Clear expired slow mode
-    
-    return True, None
-
-def antispam_check_message(username, content, channel_type='public', has_attachment=False):
-    """
-    Main anti-spam checking function that coordinates all checks
-    
-    Args:
-        username: Username of the sender
-        content: Message content to check
-        channel_type: Type of channel ('public', 'dm', 'gdm')
-        has_attachment: Whether message has an attachment
-    
-    Returns:
-        tuple: (allowed: bool, message: str or None, split_parts: list or None)
-    """
-    try:
-        # Superadmins bypass all checks
-        if username in SUPERADMINS:
-            return True, None, None
-        
-        if not username:
-            return False, "Invalid user.", None
-        
-        config = _load_antispam_config()
-        now = time.time()
-        
-        # Check user restrictions first
-        allowed, msg = _check_user_restrictions(username, config)
-        if not allowed:
-            return False, msg, None
-        
-        # For attachment-only messages, only apply rate limiting
-        if not content and has_attachment:
-            allowed, msg = _check_rate_limiting(username, channel_type, config)
-            if not allowed:
-                _apply_progressive_sanctions(username, 'rate_limit', config)
-                return False, msg, None
-            
-            # Update tracking
-            user_data = antispam_user_data[username]
-            user_data['message_history'].append((now, channel_type))
-            user_data['last_message_time'] = now
-            return True, None, None
-        
-        if not content:
-            return True, None, None
-        
-        # 1. Message Length Limits
-        allowed, msg = _check_message_length(content, config)
-        if not allowed:
-            # Try auto-splitting for large messages
-            split_parts = _auto_split_message(content, config)
-            if len(split_parts) > 1 and len(split_parts) <= config['AUTO_SPLIT_MAX_PARTS']:
-                # Check if all parts are valid
-                all_valid = True
-                for part in split_parts:
-                    part_allowed, _ = _check_message_length(part, config)
-                    if not part_allowed:
-                        all_valid = False
-                        break
-                
-                if all_valid:
-                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-            
-            _apply_progressive_sanctions(username, 'length', config)
-            return False, msg, None
-        
-        # 2. Payload Size Monitoring
-        allowed, msg = _check_payload_size(content, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'payload', config)
-            return False, msg, None
-        
-        # 3. Rate Limiting
-        allowed, msg = _check_rate_limiting(username, channel_type, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'rate_limit', config)
-            return False, msg, None
-        
-        # 4. Duplicate Detection
-        allowed, msg = _check_duplicate_content(username, content, channel_type, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'duplicate', config)
-            return False, msg, None
-        
-        # 5. Content Pattern Analysis
-        allowed, msg = _check_content_patterns(content, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'pattern', config)
-            return False, msg, None
-        
-        # All checks passed - update tracking data
-        user_data = antispam_user_data[username]
-        user_data['message_history'].append((now, channel_type))
-        user_data['recent_messages'].append((now, _normalize_content(content), channel_type))
-        user_data['content_hashes'].append((now, _generate_content_hash(content)))
-        user_data['last_message_time'] = now
-        
-        # Clean up old data to prevent memory leaks
-        window = max(config['RATE_LIMIT_WINDOW'], config['DUPLICATE_WINDOW'])
-        user_data['message_history'] = [(ts, ch) for ts, ch in user_data['message_history'] if now - ts <= window]
-        user_data['recent_messages'] = [(ts, msg, ch) for ts, msg, ch in user_data['recent_messages'] if now - ts <= window]
-        user_data['content_hashes'] = [(ts, h) for ts, h in user_data['content_hashes'] if now - ts <= window]
-        
-        return True, None, None
-        
-    except Exception as e:
-        # Fail open on unexpected errors to avoid breaking chat
-        return True, None, None
-
-def antispam_get_user_status(username):
-    """Get current anti-spam status for a user"""
-    try:
-        if username in SUPERADMINS:
-            return {"status": "superadmin", "restrictions": None}
-        
-        user_data = antispam_user_data[username]
-        now = time.time()
-        
-        status = {"status": "normal", "restrictions": []}
-        
-        if user_data['block_until'] > now:
-            remaining = int(user_data['block_until'] - now)
-            status["status"] = "blocked"
-            status["restrictions"].append(f"Blocked for {remaining} seconds")
-        
-        if user_data['slow_mode_until'] > now:
-            remaining = int(user_data['slow_mode_until'] - now)
-            if status["status"] == "normal":
-                status["status"] = "slow_mode"
-            status["restrictions"].append(f"Slow mode for {remaining} seconds")
-        
-        if user_data['violation_count'] > 0:
-            status["violation_count"] = user_data['violation_count']
-        
-        return status
-    except Exception:
-        return {"status": "unknown", "restrictions": None}
-
-# Initialize anti-spam defaults in settings
-def _init_antispam_settings():
-    """Initialize anti-spam settings with defaults"""
-    try:
-        defaults = {
-            'ANTISPAM_MAX_LENGTH': '1000',
-            'ANTISPAM_MAX_BYTES': '4000',
-            'ANTISPAM_RATE_WINDOW': '10.0',
-            'ANTISPAM_RATE_MAX': '8',
-            'ANTISPAM_MIN_GAP': '0.7',
-            'ANTISPAM_SLOW_DURATION': '10.0',
-        }
-        
-        for key, value in defaults.items():
-            if not get_setting(key):
-                set_setting(key, value)
-    except Exception:
-        pass
-
-# Initialize settings on module load
-_init_antispam_settings()
-
-# ============================================================================
-# END ANTI-SPAM SYSTEM
-# ============================================================================
 
 
 # Socket.IO connection management
@@ -3191,7 +2706,7 @@ def api_admin_toggles():
             # Group tools
             'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
             # Admin tools
-            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN',
+            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','',
             # Downtime & Alerts
             'DOWNTIME_ENABLED','DOWNTIME_REASON','ALERTS_ENABLED','ALERTS_TEXT',
             # Security
@@ -5567,11 +5082,7 @@ def api_admin_app_settings():
         'ADMIN_SYNC_PERMS',
         'ADMIN_VIEW_ACTIVE',
         'ADMIN_STEALTH_MODE',
-        'ADMIN_EMERGENCY_SHUTDOWN',
-        'ADMIN_SHOW_EMERGENCY_BLOCK',
-        # Emergency metadata (read-only status helpers)
-        'EMERGENCY_LAST_SNAPSHOT',
-        'EMERGENCY_LAST_TIME',
+        '',
         # Security
         'SEC_STRICT_ASSOCIATED_BAN',
         'SEC_DEVICE_BAN_ON_LOGIN',
@@ -7617,12 +7128,6 @@ def on_gdm_send_v1(data):
 @socketio.on('gdm_edit')
 def on_gdm_edit(data):
     me = session.get('username')
-    # Emergency shutdown: block GDM edits for non-superadmins
-    try:
-        if _emergency_write_block(me):
-            return
-    except Exception:
-        pass
     try:
         mid = int((data or {}).get('id', 0))
     except Exception:
@@ -7695,12 +7200,6 @@ def on_send_message(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new public messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # User must exist in DB; otherwise disconnect and ignore
     try:
         if not _session_user_valid():
@@ -8286,12 +7785,6 @@ def on_gdm_send(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new GDM messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # Reject if user missing from DB
     try:
         if not _session_user_valid():
@@ -8360,12 +7853,6 @@ def on_disconnect():
 @socketio.on("delete_message")
 def on_delete_message(mid):
     username = session.get("username")
-    # Emergency shutdown: block message deletions for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT username FROM messages WHERE id= ?", (mid,))
@@ -8398,12 +7885,6 @@ def on_edit_message(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
-    # Emergency shutdown: block message edits for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT username, text FROM messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -8434,12 +7915,6 @@ def on_dm_send(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new DM messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # Reject if user missing from DB
     try:
         if not _session_user_valid():
@@ -8611,12 +8086,6 @@ def on_dm_edit(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
-    # Emergency shutdown: block DM edits for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user, text FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -8643,12 +8112,6 @@ def on_dm_delete(data):
         mid = 0
     if not username or not mid:
         return
-    # Emergency shutdown: block DM deletions for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -12305,7 +11768,6 @@ CHAT_HTML = """
                         <label><input type='checkbox' id='ADMIN_SYNC_PERMS'> Sync Permissions</label><br>
                         <label><input type='checkbox' id='ADMIN_VIEW_ACTIVE'> View Active Admins</label><br>
                         <label><input type='checkbox' id='ADMIN_STEALTH_MODE'> Stealth Mode</label><br>
-                        <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
                         <div style='margin-top:8px;padding-top:6px;border-top:1px dashed #e5e7eb'>
                           <label style='display:inline-flex;gap:6px;align-items:center'><input type='checkbox' id='ALERTS_ENABLED'> On-screen Alert (bottom-left)</label>
                           <textarea id='ALERTS_TEXT' placeholder='Alert text' rows='2' style='width:100%;margin-top:6px'></textarea>

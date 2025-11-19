@@ -10231,8 +10231,15 @@ CHAT_HTML = """
           }
           if (!msg || currentMode !== 'public') return;
           
+          // Check if this pin has been dismissed by the user
+          const dismissedPins = JSON.parse(localStorage.getItem("dismissedPins") || "[]");
+          if (dismissedPins.includes(msg.id)) {
+            return; // Don't show dismissed pins
+          }
+          
           // Create pinned message element at top of chat
           pinnedMessageEl = document.createElement('div');
+          pinnedMessageEl.setAttribute("data-pin-id", msg.id);
           pinnedMessageEl.id = 'pinnedMessageTop';
           pinnedMessageEl.style.cssText = 'background:#fffbe6;border:2px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:12px;position:sticky;top:0;z-index:4';
           
@@ -10244,26 +10251,15 @@ CHAT_HTML = """
           closeBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (confirm("Remove this pinned message?")) {
-              // Call unpin API
-              fetch(`/api/admin/unpin`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({kind: "public", message_id: msg.id})
-              })
-              .then(r => r.json())
-              .then(data => {
-                if (data.ok) {
-                  pinnedMessageEl.remove();
-                  pinnedMessageEl = null;
-                } else {
-                  alert("Failed to unpin message: " + (data.error || "Unknown error"));
-                }
-              })
-              .catch(err => {
-                alert("Error unpinning message: " + err.message);
-              });
+            // Store dismissed pin ID in localStorage
+            const dismissedPins = JSON.parse(localStorage.getItem("dismissedPins") || "[]");
+            if (!dismissedPins.includes(msg.id)) {
+              dismissedPins.push(msg.id);
+              localStorage.setItem("dismissedPins", JSON.stringify(dismissedPins));
             }
+            // Hide the pinned message for this user
+            pinnedMessageEl.remove();
+            pinnedMessageEl = null;
           };
           pinnedMessageEl.appendChild(closeBtn);
           
@@ -10496,6 +10492,13 @@ CHAT_HTML = """
 
         socket.on('delete_message', id => {
             const el = chatEl.querySelector(`.message[data-id='${id}']`);
+            // If this was a pinned message, remove it from the pinned display
+            if (pinnedMessageEl && pinnedMessageEl.getAttribute("data-pin-id") === id.toString()) {
+              pinnedMessageEl.remove();
+              pinnedMessageEl = null;
+            }
+              pinnedMessageEl = null;
+            }
             if (el) el.remove();
         });
 
@@ -10506,6 +10509,11 @@ CHAT_HTML = """
                 ids.forEach(id => {
                     const el = chatEl.querySelector(`.message[data-id='${id}']`);
                     if (el) el.remove();
+                    // If this was a pinned message, remove it from the pinned display
+                    if (pinnedMessageEl && pinnedMessageEl.getAttribute("data-pin-id") === id.toString()) {
+                      pinnedMessageEl.remove();
+                      pinnedMessageEl = null;
+                    }
                 });
             } catch(e) {}
         });
@@ -10685,7 +10693,15 @@ CHAT_HTML = """
                 socket.on('pin_update', (payload)=>{
                   try {
                     if(!payload || payload.kind!=='public') return;
-                    if(payload.action==='pin'){ renderPinnedPublic(payload.message||null); }
+                    if(payload.action==='pin'){
+                      // Clear dismissed status when message is re-pinned
+                      if(payload.message && payload.message.id) {
+                        const dismissedPins = JSON.parse(localStorage.getItem("dismissedPins") || "[]");
+                        const newDismissedPins = dismissedPins.filter(id => id !== payload.message.id);
+                        localStorage.setItem("dismissedPins", JSON.stringify(newDismissedPins));
+                      }
+                      renderPinnedPublic(payload.message||null);
+                    }
                     else if(payload.action==='unpin'){ 
                       // If unpinned, check if there's another pin
                       ensurePinnedLoaded();
@@ -11187,7 +11203,7 @@ CHAT_HTML = """
             } catch(e) {}
 
             // Add context menu for message actions
-            if (isAdmin || m.username === me) {
+            // Allow all users to access reply/DM, restrict edit/delete to admin/author
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11219,6 +11235,7 @@ CHAT_HTML = """
                         return item;
                     };
 
+                    if (isAdmin || m.username === me) {
                     // Edit item (System only editable by SUPERADMIN)
                     let canEdit = false;
                     if (m.username === 'System') {
@@ -11238,14 +11255,18 @@ CHAT_HTML = """
                         }));
                     }
 
+                    }
                     // Reply
                     contextMenu.appendChild(makeItem('↩ Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
+                    // Delete item - restricted to admin/author
+                    if (isAdmin || m.username === me) {
                     // Delete item
-                    contextMenu.appendChild(makeItem('Delete Delete message', () => {
+                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
+                    }
                     // DM Sender
                     if (m.username && m.username !== me) {
                         contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
@@ -11306,7 +11327,7 @@ CHAT_HTML = """
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
             // Right-click for edit/delete if author/admin
             const canModify = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Allow all users to access reply/DM, restrict edit/delete to author/admin
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11330,13 +11351,17 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
+                    if (canModify) {
                     contextMenu.appendChild(makeItem('✏ Edit DM', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('Delete Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    if (canModify) {
+                    contextMenu.appendChild(makeItem('🗑️ Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
@@ -11384,7 +11409,7 @@ CHAT_HTML = """
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
             // Context menu for edit/delete (author/admin)
             const canModify = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Allow all users to access reply/DM, restrict edit/delete to author/admin
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11408,13 +11433,17 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
+                    if (canModify) {
                     contextMenu.appendChild(makeItem('✏ Edit message', () => {
                         const body = d.querySelector('.msg-body');
                         if (!body) return;
                         startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                     }));
+                    }
                     contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('Delete Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    if (canModify) {
+                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });

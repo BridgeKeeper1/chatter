@@ -9416,6 +9416,9 @@ CHAT_HTML = """
                     <button id="btnReportsHeader" type="button" title="View Reports" style="background:#dc2626!important;color:#fff!important;padding:8px 12px!important;border:2px solid #dc2626!important;border-radius:6px!important;cursor:pointer!important;font-weight:bold!important;display:inline-block!important;visibility:visible!important;">📋 Reports</button>
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
+                    {% if username in admins and username not in superadmins %}
+                    <button id="btnReportsHeaderAdmin" type="button" title="View Reports" style="background:#dc2626!important;color:#fff!important;padding:8px 12px!important;border:2px solid #dc2626!important;border-radius:6px!important;cursor:pointer!important;font-weight:bold!important;display:inline-block!important;visibility:visible!important;">📋 Reports</button>
+                    {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
                     {% if username not in superadmins %}
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
@@ -13553,6 +13556,15 @@ CHAT_HTML = """
             console.log("Reports button onclick bound successfully");
           } else {
             console.log("Reports button not found in DOM");
+          }
+          // Bind reports button for regular admins
+          const reportsBtnAdmin = document.getElementById("btnReportsHeaderAdmin");
+          console.log("Admin reports button found:", reportsBtnAdmin);
+          if (reportsBtnAdmin) {
+            reportsBtnAdmin.onclick = openReportsModal;
+            console.log("Admin reports button onclick bound successfully");
+          } else {
+            console.log("Admin reports button not found in DOM");
           }
         })();
         {% endif %}

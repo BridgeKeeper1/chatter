@@ -8771,6 +8771,179 @@ def on_report_user(data):
         emit("report_error", {"message": "Failed to submit report"})
 
 
+@socketio.on("fetch_reports")
+def on_fetch_reports(data):
+    """Fetch all reports for admin review"""
+    username = session.get("username")
+    if not username or not _session_user_valid():
+        emit("reports_error", {"message": "Authentication required"})
+        return
+    
+    # Check if user is admin
+    if username not in superadmins:
+        emit("reports_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        db = get_db()
+        cur = db.cursor()
+        
+        # Get filter parameters
+        status_filter = data.get("status", "all")  # all, pending, reviewed, resolved, dismissed
+        limit = min(data.get("limit", 50), 100)  # Max 100 reports at once
+        offset = data.get("offset", 0)
+        
+        # Build query based on filter
+        if status_filter == "all":
+            query = """
+                SELECT id, report_type, target_id, target_username, reason, details, 
+                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
+                FROM reports 
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            """
+            params = (limit, offset)
+        else:
+            query = """
+                SELECT id, report_type, target_id, target_username, reason, details, 
+                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
+                FROM reports 
+                WHERE status = ?
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            """
+            params = (status_filter, limit, offset)
+        
+        cur.execute(query, params)
+        reports = cur.fetchall()
+        
+        # Convert to list of dicts
+        reports_list = []
+        for report in reports:
+            reports_list.append({
+                "id": report[0],
+                "report_type": report[1],
+                "target_id": report[2],
+                "target_username": report[3],
+                "reason": report[4],
+                "details": report[5],
+                "reporter_username": report[6],
+                "created_at": report[7],
+                "status": report[8],
+                "admin_notes": report[9],
+                "resolved_at": report[10],
+                "resolved_by": report[11]
+            })
+        
+        # Get total count for pagination
+        if status_filter == "all":
+            cur.execute("SELECT COUNT(*) FROM reports")
+        else:
+            cur.execute("SELECT COUNT(*) FROM reports WHERE status = ?", (status_filter,))
+        
+        total_count = cur.fetchone()[0]
+        
+        emit("reports_data", {
+            "reports": reports_list,
+            "total": total_count,
+            "offset": offset,
+            "limit": limit
+        })
+        
+    except Exception as e:
+        emit("reports_error", {"message": "Failed to fetch reports"})
+
+@socketio.on("update_report_status")
+def on_update_report_status(data):
+    """Update report status (resolve, dismiss, etc.)"""
+    username = session.get("username")
+    if not username or not _session_user_valid():
+        emit("report_update_error", {"message": "Authentication required"})
+        return
+    
+    # Check if user is admin
+    if username not in superadmins:
+        emit("report_update_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        report_id = data.get("report_id")
+        new_status = data.get("status", "").strip()
+        admin_notes = data.get("admin_notes", "").strip()
+        
+        if not report_id or not new_status:
+            emit("report_update_error", {"message": "Missing required fields"})
+            return
+        
+        # Validate status
+        valid_statuses = ["pending", "reviewed", "resolved", "dismissed"]
+        if new_status not in valid_statuses:
+            emit("report_update_error", {"message": "Invalid status"})
+            return
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Update report
+        if new_status in ["resolved", "dismissed"]:
+            cur.execute("""
+                UPDATE reports 
+                SET status = ?, admin_notes = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
+                WHERE id = ?
+            """, (new_status, admin_notes, username, report_id))
+        else:
+            cur.execute("""
+                UPDATE reports 
+                SET status = ?, admin_notes = ?
+                WHERE id = ?
+            """, (new_status, admin_notes, report_id))
+        
+        if cur.rowcount == 0:
+            emit("report_update_error", {"message": "Report not found"})
+            return
+        
+        db.commit()
+        emit("report_update_success", {"message": "Report updated successfully"})
+        
+    except Exception as e:
+        emit("report_update_error", {"message": "Failed to update report"})
+
+@socketio.on("delete_report")
+def on_delete_report(data):
+    """Delete a report (admin only)"""
+    username = session.get("username")
+    if not username or not _session_user_valid():
+        emit("report_delete_error", {"message": "Authentication required"})
+        return
+    
+    # Check if user is admin
+    if username not in superadmins:
+        emit("report_delete_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        report_id = data.get("report_id")
+        
+        if not report_id:
+            emit("report_delete_error", {"message": "Report ID required"})
+            return
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Delete report
+        cur.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        
+        if cur.rowcount == 0:
+            emit("report_delete_error", {"message": "Report not found"})
+            return
+        
+        db.commit()
+        emit("report_delete_success", {"message": "Report deleted successfully"})
+        
+    except Exception as e:
+        emit("report_delete_error", {"message": "Failed to delete report"})
+
 # HTML Templates (unchanged)
 BASE_CSS = """
 :root {
@@ -9240,6 +9413,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
+                    <button id="btnReportsHeader" type="button" title="View Reports" style="background:#dc2626;color:#fff;padding:6px 10px;border:none;border-radius:4px;cursor:pointer">📋 Reports</button>
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
@@ -9510,6 +9684,30 @@ CHAT_HTML = """
               <button id="deleteAvatarBtn" type="button" class="btn btn-danger" style="margin-left:auto">Delete</button>
             </form>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reports Management Modal -->
+    <div id="reportsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;overflow:auto;">
+      <div id="reportsBox" style="position:relative;max-width:900px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);max-height:85vh;overflow:hidden;">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
+          <span>📋 Reports Management</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button id="refreshReports" type="button" class="btn btn-primary">🔄 Refresh</button>
+            <button id="closeReports" type="button" class="btn btn-outline">✕</button>
+          </div>
+        </div>
+        <div id="reportsContent" style="padding:16px;overflow-y:auto;max-height:calc(85vh - 80px);color:var(--primary);">
+          <div id="reportsLoading" style="text-align:center;padding:40px;color:var(--muted);">
+            <div style="font-size:24px;margin-bottom:8px;">⏳</div>
+            <div>Loading reports...</div>
+          </div>
+          <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
+            <div style="font-size:24px;margin-bottom:8px;">📭</div>
+            <div>No reports found</div>
+          </div>
+          <div id="reportsList" style="display:none;"></div>
         </div>
       </div>
     </div>
@@ -12095,6 +12293,169 @@ CHAT_HTML = """
             if (!r.ok) throw new Error(j && j.error || 'Failed');
             return j;
           }
+
+          // Reports Management Functions
+          function openReportsModal() {
+            const overlay = document.getElementById("reportsOverlay");
+            if (!overlay) return;
+            
+            overlay.style.display = "block";
+            loadReports();
+            
+            // Click outside to close
+            overlay.onclick = (e) => {
+              if (e.target === overlay) {
+                closeReportsModal();
+              }
+            };
+            
+            // Bind close button
+            const closeBtn = document.getElementById("closeReports");
+            if (closeBtn) closeBtn.onclick = closeReportsModal;
+            
+            // Bind refresh button
+            const refreshBtn = document.getElementById("refreshReports");
+            if (refreshBtn) refreshBtn.onclick = loadReports;
+          }
+          
+          function closeReportsModal() {
+            const overlay = document.getElementById("reportsOverlay");
+            if (overlay) overlay.style.display = "none";
+          }
+          
+          function loadReports(status = "all", offset = 0, limit = 50) {
+            const loading = document.getElementById("reportsLoading");
+            const empty = document.getElementById("reportsEmpty");
+            const list = document.getElementById("reportsList");
+            
+            // Show loading state
+            if (loading) loading.style.display = "block";
+            if (empty) empty.style.display = "none";
+            if (list) list.style.display = "none";
+            
+            // Emit fetch request
+            socket.emit("fetch_reports", { status, offset, limit });
+          }
+          
+          function renderReports(data) {
+            const loading = document.getElementById("reportsLoading");
+            const empty = document.getElementById("reportsEmpty");
+            const list = document.getElementById("reportsList");
+            
+            if (loading) loading.style.display = "none";
+            
+            if (!data.reports || data.reports.length === 0) {
+              if (empty) empty.style.display = "block";
+              if (list) list.style.display = "none";
+              return;
+            }
+            
+            if (empty) empty.style.display = "none";
+            if (list) {
+              list.style.display = "block";
+              list.innerHTML = data.reports.map(report => renderReportItem(report)).join("");
+            }
+          }
+          
+          function renderReportItem(report) {
+            const statusColors = {
+              pending: "#f59e0b",
+              reviewed: "#3b82f6",
+              resolved: "#10b981",
+              dismissed: "#6b7280"
+            };
+            
+            const statusColor = statusColors[report.status] || "#6b7280";
+            const createdAt = new Date(report.created_at).toLocaleString();
+            const resolvedAt = report.resolved_at ? new Date(report.resolved_at).toLocaleString() : "";
+            
+            return `
+              <div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;background:var(--card);">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+                  <div>
+                    <div style="font-weight:700;margin-bottom:4px;">
+                      ${report.report_type === "message" ? "📝" : "👤"} ${report.report_type.toUpperCase()} Report #${report.id}
+                    </div>
+                    <div style="color:var(--muted);font-size:14px;">Reported by: ${esc(report.reporter_username)} • ${createdAt}</div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="background:${statusColor};color:white;padding:4px 8px;border-radius:4px;font-size:12px;font-weight:700;">
+                      ${report.status.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+                
+                <div style="margin-bottom:12px;">
+                  <div><strong>Target:</strong> ${esc(report.target_username)}</div>
+                  <div><strong>Reason:</strong> ${esc(report.reason)}</div>
+                  ${report.details ? `<div><strong>Details:</strong> ${esc(report.details)}</div>` : ""}
+                  ${report.admin_notes ? `<div><strong>Admin Notes:</strong> ${esc(report.admin_notes)}</div>` : ""}
+                  ${resolvedAt ? `<div><strong>Resolved:</strong> ${resolvedAt} by ${esc(report.resolved_by)}</div>` : ""}
+                </div>
+                
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <select id="status-${report.id}" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;">
+                    <option value="pending" ${report.status === "pending" ? "selected" : ""}>Pending</option>
+                    <option value="reviewed" ${report.status === "reviewed" ? "selected" : ""}>Reviewed</option>
+                    <option value="resolved" ${report.status === "resolved" ? "selected" : ""}>Resolved</option>
+                    <option value="dismissed" ${report.status === "dismissed" ? "selected" : ""}>Dismissed</option>
+                  </select>
+                  <input id="notes-${report.id}" type="text" placeholder="Admin notes..." value="${esc(report.admin_notes || "")}" style="flex:1;min-width:200px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;">
+                  <button onclick="updateReportStatus(${report.id})" class="btn btn-primary">Update</button>
+                  <button onclick="deleteReport(${report.id})" class="btn btn-danger">Delete</button>
+                </div>
+              </div>
+            `;
+          }
+          
+          function updateReportStatus(reportId) {
+            const statusSelect = document.getElementById(`status-${reportId}`);
+            const notesInput = document.getElementById(`notes-${reportId}`);
+            
+            if (!statusSelect) return;
+            
+            const newStatus = statusSelect.value;
+            const adminNotes = notesInput ? notesInput.value : "";
+            
+            socket.emit("update_report_status", {
+              report_id: reportId,
+              status: newStatus,
+              admin_notes: adminNotes
+            });
+          }
+          
+          function deleteReport(reportId) {
+            if (!confirm("Are you sure you want to delete this report? This action cannot be undone.")) {
+              return;
+            }
+            
+            socket.emit("delete_report", { report_id: reportId });
+          }
+          
+          // Socket event listeners for reports
+          socket.on("reports_data", renderReports);
+          
+          socket.on("reports_error", (data) => {
+            alert("Error: " + (data.message || "Failed to load reports"));
+          });
+          
+          socket.on("report_update_success", (data) => {
+            alert(data.message || "Report updated successfully");
+            loadReports(); // Refresh the list
+          });
+          
+          socket.on("report_update_error", (data) => {
+            alert("Error: " + (data.message || "Failed to update report"));
+          });
+          
+          socket.on("report_delete_success", (data) => {
+            alert(data.message || "Report deleted successfully");
+            loadReports(); // Refresh the list
+          });
+          
+          socket.on("report_delete_error", (data) => {
+            alert("Error: " + (data.message || "Failed to delete report"));
+          });
           async function openAdminDashboard(){
             try { document.getElementById('settingsOverlay').style.display='none'; } catch(e){}
             let info = await adminOverview();
@@ -13183,6 +13544,9 @@ CHAT_HTML = """
           if (b1) b1.onclick = openAdminDashboard;
           if (b2) b2.onclick = openAdminDashboard;
           if (b3) b3.onclick = openAdminDashboard;
+          // Bind reports button
+          const reportsBtn = document.getElementById("btnReportsHeader");
+          if (reportsBtn) reportsBtn.onclick = openReportsModal;
         })();
         {% endif %}
         document.getElementById('saveTheme').onclick = async () => {

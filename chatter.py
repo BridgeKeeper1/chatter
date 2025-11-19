@@ -315,7 +315,7 @@ def _calculate_message_hash(text, username):
     """Calculate hash for duplicate detection"""
     try:
         # Normalize text for comparison
-        normalized = re.sub(r'\s+', ' ', (text or '').strip().lower())
+        normalized = re.sub(r'\\s+', ' ', (text or '').strip().lower())
         content = f"{username}:{normalized}"
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     except Exception:
@@ -328,8 +328,8 @@ def _fuzzy_similarity(text1, text2):
             return 0.0
         
         # Normalize texts
-        norm1 = re.sub(r'\s+', ' ', text1.strip().lower())
-        norm2 = re.sub(r'\s+', ' ', text2.strip().lower())
+        norm1 = re.sub(r'\\s+', ' ', text1.strip().lower())
+        norm2 = re.sub(r'\\s+', ' ', text2.strip().lower())
         
         if norm1 == norm2:
             return 1.0
@@ -378,7 +378,7 @@ def _detect_suspicious_patterns(text):
         violations = []
         
         # Excessive whitespace
-        whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
+        whitespace_ratio = len(re.findall(r'\\s', text)) / max(len(text), 1)
         if whitespace_ratio > 0.7:
             violations.append('excessive_whitespace')
         
@@ -400,7 +400,7 @@ def _detect_suspicious_patterns(text):
             violations.append('excessive_breaks')
         
         # Code block patterns
-        code_blocks = len(re.findall(r'```[\s\S]*?```', text))
+        code_blocks = len(re.findall(r'```[\\s\S]*?```', text))
         if code_blocks > 3:
             violations.append('excessive_code_blocks')
         
@@ -682,7 +682,7 @@ function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorA
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
-  const isHeader = (t) => /(ONLINE|OFFLINE)\s*—/i.test(t);
+  const isHeader = (t) => /(ONLINE|OFFLINE)\\s*—/i.test(t);
   const wipe = (node) => { if(node) node.textContent=''; };
   ['.status','.user-status','.presence','.presence-text','.status-text'].forEach(function(q){ root.querySelectorAll(q).forEach(wipe); });
   root.querySelectorAll('span,small,div,p').forEach(function(el){
@@ -1512,7 +1512,7 @@ def sanitize_username(u: str) -> str:
         # Keep letters, numbers, space, underscore, hyphen, and dot
         text = re.sub(r"[^A-Za-z0-9._\- ]+", "", text)
         # Collapse multiple spaces
-        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\\s+", " ", text).strip()
         # Limit length to 20 characters
         if len(text) > 20:
             text = text[:20].rstrip()
@@ -9747,7 +9747,7 @@ CHAT_HTML = """
           let current = defaultLanguage;
 
           function normalize(text) {
-            return (text || '').replace(/\s+/g, ' ').trim();
+            return (text || '').replace(/\\\\s+/g, ' ').trim();
           }
 
           async function fetchTranslation(text, lang) {
@@ -9828,8 +9828,8 @@ CHAT_HTML = """
               if (!translated) continue;
               for (const node of nodeList) {
                 const original = originals.get(node) ?? node.nodeValue ?? '';
-                const leading = (original.match(/^\s*/) || [''])[0];
-                const trailing = (original.match(/\s*$/) || [''])[0];
+                const leading = (original.match(/^\\s*/) || [''])[0];
+                const trailing = (original.match(/\\s*$/) || [''])[0];
                 node.nodeValue = `${leading}${translated}${trailing}`;
               }
             }
@@ -10562,7 +10562,7 @@ CHAT_HTML = """
           
           let text = (msg.text||'');
           try {
-            text = text.replace(/^<p>/i, '').replace(/<\/p>$/i, '');
+            text = text.replace(/^<p>/i, '').replace(/<\\/p>$/i, '');
           } catch(_e) {}
           const username = (msg.username||'');
           const time = msg.created_at ? new Date(msg.created_at).toLocaleString() : '';
@@ -11745,7 +11745,7 @@ CHAT_HTML = """
             currentReply = info || null;
             if (currentReply){
               replyUser.textContent = currentReply.username || '';
-              replySnippet.textContent = (currentReply.snippet || '').replace(/\s+/g,' ').slice(0,140);
+              replySnippet.textContent = (currentReply.snippet || '').replace(/\\s+/g,' ').slice(0,140);
               replyBar.style.display = 'block';
               textInput.focus();
             } else { replyBar.style.display = 'none'; }

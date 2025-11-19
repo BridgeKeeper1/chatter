@@ -9413,7 +9413,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
-                    <button id="btnReportsHeader" type="button" title="View Reports" style="background:#dc2626;color:#fff;padding:6px 10px;border:none;border-radius:4px;cursor:pointer">📋 Reports</button>
+                    <button id="btnReportsHeader" type="button" title="View Reports" style="background:#dc2626!important;color:#fff!important;padding:8px 12px!important;border:2px solid #dc2626!important;border-radius:6px!important;cursor:pointer!important;font-weight:bold!important;display:inline-block!important;visibility:visible!important;">📋 Reports</button>
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
@@ -12296,6 +12296,7 @@ CHAT_HTML = """
 
           // Reports Management Functions
           function openReportsModal() {
+            console.log("openReportsModal called");
             const overlay = document.getElementById("reportsOverlay");
             if (!overlay) return;
             
@@ -13546,7 +13547,13 @@ CHAT_HTML = """
           if (b3) b3.onclick = openAdminDashboard;
           // Bind reports button
           const reportsBtn = document.getElementById("btnReportsHeader");
-          if (reportsBtn) reportsBtn.onclick = openReportsModal;
+          console.log("Reports button found:", reportsBtn);
+          if (reportsBtn) {
+            reportsBtn.onclick = openReportsModal;
+            console.log("Reports button onclick bound successfully");
+          } else {
+            console.log("Reports button not found in DOM");
+          }
         })();
         {% endif %}
         document.getElementById('saveTheme').onclick = async () => {

@@ -10935,6 +10935,13 @@ CHAT_HTML = """
                     showProfilePopover({ getBoundingClientRect: () => ({ top: y, left: x }) }, p);
                 } catch(e) {}
             }));
+            if (user !== me) {
+                menu.appendChild(makeItem('🚨 Report User', () => {
+                    showReportModal('user', {
+                        target_username: user
+                    });
+                }));
+            }
             if (SUPERADMINS.includes(me) && !SUPERADMINS.includes(user)) {
                 menu.appendChild(makeItem('Delete Account', async () => {
                     if (!confirm(`Delete account for ${user}? This removes their data.`)) return;
@@ -10967,7 +10974,7 @@ CHAT_HTML = """
             const toggle = ()=>{ try{ menu.style.display = (menu.style.display==='none'||!menu.style.display)?'block':'none'; }catch(e){} };
             btn.onclick = (e)=>{ e.stopPropagation(); toggle(); };
             document.addEventListener('click', (e)=>{ if (!menu.contains(e.target) && e.target!==btn) close(); });
-            aDM.onclick = async (e)=>{ e.preventDefault(); close(); try{ const users = await fetch('/api/users_all').then(r=>r.json()); const name = prompt('Start DM with which user?'); if(!name) return; if(!users.includes(name)){ alert('User not found'); return;} openDM(name);}catch(err){} };
+            aDM.onclick = async (e)=>{ e.preventDefault(); close(); try{ const users = await fetch('/api/users_all').then(r=>r.json()); showUserSearchModal();}catch(err){} };
             aGroup.onclick = (e)=>{ e.preventDefault(); close(); try{ document.getElementById('newGdmBtn').click(); }catch(err){} };
             aVoice.onclick = async (e)=>{ e.preventDefault(); close(); try{ const name = prompt('Enter voice channel name (letters/numbers)'); if(!name) return; openVoice(name.trim()); }catch(err){} };
           }catch(e){}
@@ -11348,6 +11355,13 @@ CHAT_HTML = """
                     // DM Sender
                     if (m.username && m.username !== me) {
                         contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
+                        // Report Message
+                        contextMenu.appendChild(makeItem('🚨 Report Message', () => {
+                            showReportModal('message', {
+                                message_id: m.id,
+                                target_username: m.username
+                            });
+                        }));
                     }
                     
                     document.body.appendChild(contextMenu);
@@ -13356,6 +13370,296 @@ CHAT_HTML = """
                 });
             }
         } catch(e) { console.warn('Resizers init failed', e); }
+// Reporting System Frontend Implementation
+
+// Report modal HTML and functionality
+function createReportModal() {
+    const modalHTML = `
+        <div id="reportModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;">
+            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;min-width:400px;max-width:500px;">
+                <h3 style="margin:0 0 15px 0;color:var(--primary);">Report Content</h3>
+                <div id="reportContent">
+                    <div style="margin-bottom:15px;">
+                        <label style="display:block;margin-bottom:5px;color:var(--primary);">Reason:</label>
+                        <select id="reportReason" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--primary);">
+                            <option value="">Select a reason...</option>
+                            <option value="spam">Spam</option>
+                            <option value="harassment">Harassment</option>
+                            <option value="hate_speech">Hate Speech</option>
+                            <option value="inappropriate">Inappropriate Content</option>
+                            <option value="impersonation">Impersonation</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom:15px;">
+                        <label style="display:block;margin-bottom:5px;color:var(--primary);">Additional Details (optional):</label>
+                        <textarea id="reportDetails" placeholder="Provide additional context..." style="width:100%;height:80px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--primary);resize:vertical;"></textarea>
+                    </div>
+                </div>
+                <div style="display:flex;gap:10px;justify-content:flex-end;">
+                    <button id="reportCancel" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:4px;cursor:pointer;">Cancel</button>
+                    <button id="reportSubmit" style="padding:8px 16px;border:none;background:#dc2626;color:white;border-radius:4px;cursor:pointer;">Submit Report</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    if (!document.getElementById('reportModal')) {
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        
+        // Event listeners
+        document.getElementById('reportCancel').onclick = () => closeReportModal();
+        document.getElementById('reportSubmit').onclick = () => submitReport();
+        document.getElementById('reportModal').onclick = (e) => {
+            if (e.target.id === 'reportModal') closeReportModal();
+        };
+    }
+}
+
+function showReportModal(type, data) {
+    createReportModal();
+    const modal = document.getElementById('reportModal');
+    const reasonSelect = document.getElementById('reportReason');
+    const detailsTextarea = document.getElementById('reportDetails');
+    
+    // Store report data
+    modal.reportData = { type, ...data };
+    
+    // Update modal title and reason options based on type
+    const title = modal.querySelector('h3');
+    if (type === 'message') {
+        title.textContent = `Report Message from @${data.target_username}`;
+        // Remove impersonation option for message reports
+        const impersonationOption = reasonSelect.querySelector('option[value="impersonation"]');
+        if (impersonationOption) impersonationOption.style.display = 'none';
+    } else {
+        title.textContent = `Report User @${data.target_username}`;
+        // Show impersonation option for user reports
+        const impersonationOption = reasonSelect.querySelector('option[value="impersonation"]');
+        if (impersonationOption) impersonationOption.style.display = 'block';
+    }
+    
+    // Reset form
+    reasonSelect.value = '';
+    detailsTextarea.value = '';
+    
+    modal.style.display = 'block';
+    reasonSelect.focus();
+}
+
+function closeReportModal() {
+    const modal = document.getElementById('reportModal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.reportData = null;
+    }
+}
+
+function submitReport() {
+    const modal = document.getElementById('reportModal');
+    const reason = document.getElementById('reportReason').value;
+    const details = document.getElementById('reportDetails').value.trim();
+    
+    if (!reason) {
+        alert('Please select a reason for the report.');
+        return;
+    }
+    
+    const reportData = modal.reportData;
+    if (!reportData) return;
+    
+    const payload = {
+        reason,
+        details,
+        target_username: reportData.target_username
+    };
+    
+    if (reportData.type === 'message') {
+        payload.message_id = reportData.message_id;
+        socket.emit('report_message', payload);
+    } else {
+        socket.emit('report_user', payload);
+    }
+    
+    closeReportModal();
+}
+
+// User Search Implementation
+function createUserSearchModal() {
+    const modalHTML = `
+        <div id="userSearchModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;">
+            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;min-width:400px;max-width:500px;">
+                <h3 style="margin:0 0 15px 0;color:var(--primary);">Start Direct Message</h3>
+                <div style="margin-bottom:15px;">
+                    <input id="userSearchInput" type="text" placeholder="Search for users..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--primary);">
+                </div>
+                <div id="userSearchResults" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--card);">
+                    <div style="padding:20px;text-align:center;color:var(--muted);">Type at least 2 characters to search...</div>
+                </div>
+                <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:15px;">
+                    <button id="userSearchCancel" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:4px;cursor:pointer;">Cancel</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    if (!document.getElementById('userSearchModal')) {
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        
+        // Event listeners
+        document.getElementById('userSearchCancel').onclick = () => closeUserSearchModal();
+        document.getElementById('userSearchModal').onclick = (e) => {
+            if (e.target.id === 'userSearchModal') closeUserSearchModal();
+        };
+        
+        // Search functionality
+        let searchTimeout;
+        const searchInput = document.getElementById('userSearchInput');
+        const resultsDiv = document.getElementById('userSearchResults');
+        
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const query = e.target.value.trim();
+            
+            if (query.length < 2) {
+                resultsDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">Type at least 2 characters to search...</div>';
+                return;
+            }
+            
+            searchTimeout = setTimeout(() => searchUsers(query), 300);
+        });
+    }
+}
+
+async function searchUsers(query) {
+    const resultsDiv = document.getElementById('userSearchResults');
+    
+    try {
+        resultsDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">Searching...</div>';
+        
+        const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}&limit=20`);
+        const data = await response.json();
+        
+        if (data.users && data.users.length > 0) {
+            resultsDiv.innerHTML = data.users.map(user => `
+                <div class="user-search-result" data-username="${user.username}" style="display:flex;align-items:center;gap:10px;padding:10px;cursor:pointer;border-bottom:1px solid var(--border);">
+                    <img src="${user.avatar || 'https://api.dicebear.com/7.x/initials/svg?seed=' + encodeURIComponent(user.username)}" 
+                         alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
+                    <div style="flex:1;">
+                        <div style="font-weight:bold;color:var(--primary);">@${user.username}</div>
+                        <div style="font-size:12px;color:var(--muted);">${user.status || 'offline'} • ${user.bio || 'No bio'}</div>
+                    </div>
+                    <div style="width:8px;height:8px;border-radius:50%;background:${getStatusColor(user.status)};"></div>
+                </div>
+            `).join('');
+            
+            // Add click handlers
+            resultsDiv.querySelectorAll('.user-search-result').forEach(item => {
+                item.addEventListener('click', () => {
+                    const username = item.dataset.username;
+                    closeUserSearchModal();
+                    openDM(username);
+                });
+                
+                item.addEventListener('mouseenter', () => {
+                    item.style.background = 'var(--hover)';
+                });
+                
+                item.addEventListener('mouseleave', () => {
+                    item.style.background = 'transparent';
+                });
+            });
+        } else {
+            resultsDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">No users found</div>';
+        }
+    } catch (error) {
+        resultsDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--error);">Search failed. Please try again.</div>';
+    }
+}
+
+function getStatusColor(status) {
+    switch (status) {
+        case 'online': return '#22c55e';
+        case 'idle': return '#f59e0b';
+        case 'dnd': return '#ef4444';
+        default: return '#6b7280';
+    }
+}
+
+function showUserSearchModal() {
+    createUserSearchModal();
+    const modal = document.getElementById('userSearchModal');
+    modal.style.display = 'block';
+    document.getElementById('userSearchInput').focus();
+}
+
+function closeUserSearchModal() {
+    const modal = document.getElementById('userSearchModal');
+    if (modal) {
+        modal.style.display = 'none';
+        document.getElementById('userSearchInput').value = '';
+        document.getElementById('userSearchResults').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">Type at least 2 characters to search...</div>';
+    }
+}
+
+// Socket.IO event listeners for reporting
+socket.on('report_success', (data) => {
+    showToast('✅ Report submitted successfully', 'success');
+});
+
+socket.on('report_error', (data) => {
+    showToast('❌ ' + data.message, 'error');
+});
+
+// Toast notification system
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        border-radius: 6px;
+        color: white;
+        font-weight: 500;
+        z-index: 10001;
+        max-width: 300px;
+        word-wrap: break-word;
+        transition: all 0.3s ease;
+    `;
+    
+    switch (type) {
+        case 'success':
+            toast.style.background = '#22c55e';
+            break;
+        case 'error':
+            toast.style.background = '#ef4444';
+            break;
+        default:
+            toast.style.background = '#3b82f6';
+    }
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    // Animate in
+    setTimeout(() => {
+        toast.style.transform = 'translateX(0)';
+        toast.style.opacity = '1';
+    }, 10);
+    
+    // Remove after 4 seconds
+    setTimeout(() => {
+        toast.style.transform = 'translateX(100%)';
+        toast.style.opacity = '0';
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 300);
+    }, 4000);
+}
+
     </script>
 </body>
 </html>

@@ -228,70 +228,6 @@ def _log_incident(kind: str, meta: dict | None = None):
         pass
 
 # ============================================================================
-# EMERGENCY SHUTDOWN FUNCTIONS
-# ============================================================================
-
-def _is_emergency_shutdown() -> bool:
-    """Return True if the ADMIN_EMERGENCY_SHUTDOWN toggle is enabled.
-
-    This is used to enforce a global emergency read-only mode.
-    """
-    try:
-        return str(get_setting('ADMIN_EMERGENCY_SHUTDOWN','0')) == '1'
-    except Exception:
-        return False
-
-def _emergency_write_block(user: str | None = None) -> bool:
-    """Return True if writes should be blocked for this user due to emergency shutdown.
-
-    Superadmins are allowed to continue making changes so they can manage recovery.
-    """
-    try:
-        if not _is_emergency_shutdown():
-            return False
-        # Allow superadmins to keep writing during emergency
-        try:
-            if user and is_superadmin(user):
-                return False
-        except Exception:
-            pass
-        # Best-effort notification to the user; do not persist
-        try:
-            if user:
-                emit("system_message", "Emergency maintenance in progress; chat is read-only", room=f'user:{user}')
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-def _maybe_snapshot_db_on_emergency(old_val: str, new_val: str):
-    """When emergency shutdown flips from 0 -> 1, take a best-effort DB snapshot.
-
-    This is intentionally lightweight: it copies the SQLite file and logs the event.
-    """
-    try:
-        if old_val == '0' and new_val == '1':
-            try:
-                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-            except Exception:
-                ts = str(int(time.time()))
-            base = os.path.basename(DB_PATH)
-            snap_name = f"emergency_{ts}_{base}"
-            dest = os.path.join(BACKUP_DIR, snap_name)
-            try:
-                shutil.copy2(DB_PATH, dest)
-            except Exception:
-                # If copy fails, still log the attempt
-                dest = ''
-            meta = {'snapshot': dest or 'failed', 'db_path': DB_PATH}
-            try:
-                u = session.get('username') or ''
-                if u:
-                    meta['actor'] = u
-            except Exception:
-                pass
-            _log_incident('emergency_shutdown', meta)
     except Exception:
         pass
 
@@ -1890,23 +1826,8 @@ def set_setting(key: str, value: str):
     try:
         _ensure_app_settings()
         db = get_db(); cur = db.cursor()
-        # For emergency toggle, read old value so we can detect 0->1 transitions
-        old_val = None
-        try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
-                cur.execute('SELECT value FROM app_settings WHERE key=?', (key,))
-                row = cur.fetchone()
-                if row is not None:
-                    old_val = row[0] if not isinstance(row, sqlite3.Row) else row['value']
-        except Exception:
-            old_val = None
-        cur.execute('INSERT OR REPLACE INTO app_settings(key, value) VALUES(?,?)', (key, str(value)))
+        cur.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)", (key, value))
         db.commit()
-        try:
-            if key == 'ADMIN_EMERGENCY_SHUTDOWN':
-                _maybe_snapshot_db_on_emergency(str(old_val or '0'), str(value))
-        except Exception:
-            pass
         return True
     except Exception:
         return False
@@ -3191,7 +3112,7 @@ def api_admin_toggles():
             # Group tools
             'GD_LOCK_GROUP','GD_UNLOCK_GROUP','GD_REMOVE_USER','GD_TRANSFER_OWNERSHIP','GD_ARCHIVE_GROUP','GD_DELETE_GROUP','GD_CLOSE_ALL_DMS','GD_DM_AS_SYSTEM','GD_SAVE_DM_LOGS','GD_FORCE_LEAVE_GROUP',
             # Admin tools
-            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE','ADMIN_EMERGENCY_SHUTDOWN',
+            'ADMIN_SYNC_PERMS','ADMIN_VIEW_ACTIVE','ADMIN_STEALTH_MODE',
             # Downtime & Alerts
             'DOWNTIME_ENABLED','DOWNTIME_REASON','ALERTS_ENABLED','ALERTS_TEXT',
             # Security
@@ -5567,11 +5488,6 @@ def api_admin_app_settings():
         'ADMIN_SYNC_PERMS',
         'ADMIN_VIEW_ACTIVE',
         'ADMIN_STEALTH_MODE',
-        'ADMIN_EMERGENCY_SHUTDOWN',
-        'ADMIN_SHOW_EMERGENCY_BLOCK',
-        # Emergency metadata (read-only status helpers)
-        'EMERGENCY_LAST_SNAPSHOT',
-        'EMERGENCY_LAST_TIME',
         # Security
         'SEC_STRICT_ASSOCIATED_BAN',
         'SEC_DEVICE_BAN_ON_LOGIN',
@@ -7617,12 +7533,6 @@ def on_gdm_send_v1(data):
 @socketio.on('gdm_edit')
 def on_gdm_edit(data):
     me = session.get('username')
-    # Emergency shutdown: block GDM edits for non-superadmins
-    try:
-        if _emergency_write_block(me):
-            return
-    except Exception:
-        pass
     try:
         mid = int((data or {}).get('id', 0))
     except Exception:
@@ -7695,12 +7605,6 @@ def on_send_message(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new public messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # User must exist in DB; otherwise disconnect and ignore
     try:
         if not _session_user_valid():
@@ -8286,12 +8190,6 @@ def on_gdm_send(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new GDM messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # Reject if user missing from DB
     try:
         if not _session_user_valid():
@@ -8360,12 +8258,6 @@ def on_disconnect():
 @socketio.on("delete_message")
 def on_delete_message(mid):
     username = session.get("username")
-    # Emergency shutdown: block message deletions for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT username FROM messages WHERE id= ?", (mid,))
@@ -8398,12 +8290,6 @@ def on_edit_message(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
-    # Emergency shutdown: block message edits for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT username, text FROM messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -8434,12 +8320,6 @@ def on_dm_send(data):
     username = session.get("username")
     if not username:
         return
-    # Emergency shutdown: block new DM messages for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     # Reject if user missing from DB
     try:
         if not _session_user_valid():
@@ -8611,12 +8491,6 @@ def on_dm_edit(data):
     new_text = (data or {}).get("text", "")
     if not username or not mid:
         return
-    # Emergency shutdown: block DM edits for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user, text FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -8643,12 +8517,6 @@ def on_dm_delete(data):
         mid = 0
     if not username or not mid:
         return
-    # Emergency shutdown: block DM deletions for non-superadmins
-    try:
-        if _emergency_write_block(username):
-            return
-    except Exception:
-        pass
     db = get_db(); cur = db.cursor()
     cur.execute("SELECT from_user, to_user FROM direct_messages WHERE id=?", (mid,))
     row = cur.fetchone()
@@ -10223,6 +10091,23 @@ CHAT_HTML = """
 
         // Pinned public message helpers (global scope)
         let pinnedMessageEl = null;
+        // Global set to track blocked pin IDs (from deleted pinned messages)
+        const blockedPinIds = new Set();
+        // Load blocked pin IDs from localStorage
+        const blocked = JSON.parse(localStorage.getItem("blockedPinIds") || "[]");
+        blocked.forEach(id => blockedPinIds.add(id));
+        
+        // Function to block a pin ID permanently
+        function blockPinId(messageId) {
+          blockedPinIds.add(messageId);
+          const blockedArray = Array.from(blockedPinIds);
+          localStorage.setItem("blockedPinIds", JSON.stringify(blockedArray));
+        }
+        
+        // Function to check if a pin ID is blocked
+        function isPinIdBlocked(messageId) {
+          return blockedPinIds.has(messageId);
+        }
         function renderPinnedPublic(msg){
           // Remove existing pinned message if any
           if (pinnedMessageEl && pinnedMessageEl.parentNode) {
@@ -10230,10 +10115,20 @@ CHAT_HTML = """
             pinnedMessageEl = null;
           }
           if (!msg || currentMode !== 'public') return;
+          // Check if this pin has been dismissed by the user
+          const dismissedPins = JSON.parse(localStorage.getItem("dismissedPins") || "[]");
+          if (dismissedPins.includes(msg.id)) {
+            return; // Do not show dismissed pins
+          }
+          // Check if this pin ID is blocked (from deleted pinned messages)
+          if (isPinIdBlocked(msg.id)) {
+            return; // Do not show blocked pin IDs
+          }
           
           // Create pinned message element at top of chat
           pinnedMessageEl = document.createElement('div');
           pinnedMessageEl.id = 'pinnedMessageTop';
+          pinnedMessageEl.setAttribute("data-pin-id", msg.id);
           pinnedMessageEl.style.cssText = 'background:#fffbe6;border:2px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:12px;position:sticky;top:0;z-index:4';
           
           // Add close button to pinned message
@@ -10244,26 +10139,15 @@ CHAT_HTML = """
           closeBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (confirm("Remove this pinned message?")) {
-              // Call unpin API
-              fetch(`/api/admin/unpin`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({kind: "public", message_id: msg.id})
-              })
-              .then(r => r.json())
-              .then(data => {
-                if (data.ok) {
-                  pinnedMessageEl.remove();
-                  pinnedMessageEl = null;
-                } else {
-                  alert("Failed to unpin message: " + (data.error || "Unknown error"));
-                }
-              })
-              .catch(err => {
-                alert("Error unpinning message: " + err.message);
-              });
+            // Store dismissed pin ID in localStorage
+            const dismissedPins = JSON.parse(localStorage.getItem("dismissedPins") || "[]");
+            if (!dismissedPins.includes(msg.id)) {
+              dismissedPins.push(msg.id);
+              localStorage.setItem("dismissedPins", JSON.stringify(dismissedPins));
             }
+            // Hide the pinned message for this user
+            pinnedMessageEl.remove();
+            pinnedMessageEl = null;
           };
           pinnedMessageEl.appendChild(closeBtn);
           
@@ -11187,7 +11071,7 @@ CHAT_HTML = """
             } catch(e) {}
 
             // Add context menu for message actions
-            if (isAdmin || m.username === me) {
+            // Allow all users to access reply/DM, restrict edit/delete to admin/author
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11243,7 +11127,7 @@ CHAT_HTML = """
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
                     // Delete item
-                    contextMenu.appendChild(makeItem('Delete Delete message', () => {
+                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
                     // DM Sender
@@ -11260,7 +11144,6 @@ CHAT_HTML = """
                         }
                     }, {once: true});
                 });
-            }
 
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
@@ -11306,7 +11189,7 @@ CHAT_HTML = """
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
             // Right-click for edit/delete if author/admin
             const canModify = (dm.from_user === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Allow all users to access reply, restrict edit/delete to author/admin
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11330,17 +11213,20 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit DM', () => {
-                        const body = d.querySelector('.msg-body');
-                        if (!body) return;
-                        startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
-                    }));
-                    contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'dm', id: dm.id, username: dm.from_user, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
+                    if (canModify) {
+                        contextMenu.appendChild(makeItem('✏ Edit DM', () => {
+                            const body = d.querySelector('.msg-body');
+                            if (!body) return;
+                            startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
+                        }));
+                    }
+                    if (canModify) {
+                        contextMenu.appendChild(makeItem('🗑️ Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                    }
                     contextMenu.appendChild(makeItem('Delete Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
-            }
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -11384,7 +11270,7 @@ CHAT_HTML = """
             try { const rpv = d.querySelector('.reply-preview'); if (rpv) { rpv.addEventListener('click', ()=>{ const rid = rpv.getAttribute('data-reply-id'); if (rid) { const t = chatEl.querySelector(`.message[data-id="${rid}"]`); if (t) { t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #93c5fd'; setTimeout(()=>{ t.style.outline=''; }, 1200); } } }); } } catch(e){}
             // Context menu for edit/delete (author/admin)
             const canModify = (m.username === me) || isAdmin || SUPERADMINS.includes(me);
-            if (canModify) {
+            // Allow all users to access reply, restrict edit/delete to author/admin
                 d.addEventListener('contextmenu', ev => {
                     ev.preventDefault();
                     if (contextMenu) contextMenu.remove();
@@ -11408,17 +11294,20 @@ CHAT_HTML = """
                         item.onclick = () => { try { handler(); } finally { if (contextMenu) { contextMenu.remove(); contextMenu = null; } } };
                         return item;
                     };
-                    contextMenu.appendChild(makeItem('✏ Edit message', () => {
-                        const body = d.querySelector('.msg-body');
-                        if (!body) return;
-                        startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
-                    }));
-                    contextMenu.appendChild(makeItem('↩ Reply', () => { setReply({ type:'gdm', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' }); }));
-                    contextMenu.appendChild(makeItem('Delete Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    if (canModify) {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
+                            const body = d.querySelector('.msg-body');
+                            if (!body) return;
+                            startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
+                        }));
+                    }
+                    if (canModify) {
+                        contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                    }
+                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
                 });
-            }
             chatEl.appendChild(d);
             try { Language.translateFragment(d); } catch(_){}
         }
@@ -12305,7 +12194,6 @@ CHAT_HTML = """
                         <label><input type='checkbox' id='ADMIN_SYNC_PERMS'> Sync Permissions</label><br>
                         <label><input type='checkbox' id='ADMIN_VIEW_ACTIVE'> View Active Admins</label><br>
                         <label><input type='checkbox' id='ADMIN_STEALTH_MODE'> Stealth Mode</label><br>
-                        <label><input type='checkbox' id='ADMIN_EMERGENCY_SHUTDOWN'> Emergency Shutdown</label><br>
                         <div style='margin-top:8px;padding-top:6px;border-top:1px dashed #e5e7eb'>
                           <label style='display:inline-flex;gap:6px;align-items:center'><input type='checkbox' id='ALERTS_ENABLED'> On-screen Alert (bottom-left)</label>
                           <textarea id='ALERTS_TEXT' placeholder='Alert text' rows='2' style='width:100%;margin-top:6px'></textarea>

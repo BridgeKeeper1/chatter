@@ -9413,11 +9413,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
-                    <button id="btnReportsHeader" type="button" title="View Reports" style="background:#dc2626!important;color:#fff!important;padding:8px 12px!important;border:2px solid #dc2626!important;border-radius:6px!important;cursor:pointer!important;font-weight:bold!important;display:inline-block!important;visibility:visible!important;">📋 Reports</button>
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
-                    {% endif %}
-                    {% if username in admins and username not in superadmins %}
-                    <button id="btnReportsHeaderAdmin" type="button" title="View Reports" style="background:#dc2626!important;color:#fff!important;padding:8px 12px!important;border:2px solid #dc2626!important;border-radius:6px!important;cursor:pointer!important;font-weight:bold!important;display:inline-block!important;visibility:visible!important;">📋 Reports</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
                     {% if username not in superadmins %}
@@ -9468,7 +9464,10 @@ CHAT_HTML = """
       <div id="adminBox" style="position:relative;max-width:720px;margin:50px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
           <strong>Admin Dashboard</strong>
-          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button id="adminReportsBtn" type="button" style="background:#dc2626;color:#fff;padding:6px 12px;border:none;border-radius:6px;cursor:pointer;font-weight:bold">📋 Reports</button>
+            <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
+          </div>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:16px;color:var(--primary)">
           <div id="idResetDropdown" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card); display:none">
@@ -10330,6 +10329,14 @@ CHAT_HTML = """
             if (b2) b2.onclick = open;
             if (b3) b3.onclick = open;
             document.getElementById('closeAdminOverlay').onclick = close;
+            // Bind admin reports button
+            const adminReportsBtn = document.getElementById("adminReportsBtn");
+            if (adminReportsBtn) {
+              adminReportsBtn.onclick = () => {
+                close(); // Close admin dashboard
+                openReportsModal(); // Open reports modal
+              };
+            }
           } catch(e) {}
           const say = (t,c)=>{ const el=document.getElementById('adminDashMsg'); if(el){ el.textContent=t||''; el.style.color=c||'#374151'; } };
           // ID Reset dropdown wiring
@@ -13548,25 +13555,6 @@ CHAT_HTML = """
           if (b1) b1.onclick = openAdminDashboard;
           if (b2) b2.onclick = openAdminDashboard;
           if (b3) b3.onclick = openAdminDashboard;
-          // Bind reports button
-          const reportsBtn = document.getElementById("btnReportsHeader");
-          console.log("Reports button found:", reportsBtn);
-          if (reportsBtn) {
-            reportsBtn.onclick = openReportsModal;
-            console.log("Reports button onclick bound successfully");
-          } else {
-            console.log("Reports button not found in DOM");
-          }
-          // Bind reports button for regular admins
-          const reportsBtnAdmin = document.getElementById("btnReportsHeaderAdmin");
-          console.log("Admin reports button found:", reportsBtnAdmin);
-          if (reportsBtnAdmin) {
-            reportsBtnAdmin.onclick = openReportsModal;
-            console.log("Admin reports button onclick bound successfully");
-          } else {
-            console.log("Admin reports button not found in DOM");
-          }
-        })();
         {% endif %}
         document.getElementById('saveTheme').onclick = async () => {
             const theme = (document.getElementById('setTheme').value||'').trim().toLowerCase();

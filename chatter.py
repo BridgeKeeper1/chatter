@@ -9348,6 +9348,104 @@ CHAT_HTML = """
         body.show-leftbar #mobileBackdrop,
         body.show-rightbar #mobileBackdrop { display:block; }
         header { position:sticky; top:0; background:var(--bg); z-index:5; padding-bottom:6px; }
+      /* Enhanced Reports System Styling */
+      .filter-btn {
+        transition: all 0.2s ease;
+      }
+      
+      .filter-btn:hover {
+        background: #f3f4f6 !important;
+        border-color: #9ca3af !important;
+      }
+      
+      .filter-btn.active {
+        background: #374151 !important;
+        color: #fff !important;
+        border-color: #374151 !important;
+      }
+      
+      .report-item {
+        transition: all 0.2s ease;
+      }
+      
+      .report-item:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      }
+      
+      .report-header:hover {
+        background: #f1f5f9 !important;
+      }
+      
+      .report-details {
+        transition: all 0.3s ease;
+        overflow: hidden;
+      }
+      
+      #reportsOverlay {
+        backdrop-filter: blur(2px);
+      }
+      
+      #reportsBox {
+        animation: slideIn 0.3s ease-out;
+      }
+      
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(-20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      
+      /* Custom scrollbar for reports content */
+      #reportsContent::-webkit-scrollbar {
+        width: 8px;
+      }
+      
+      #reportsContent::-webkit-scrollbar-track {
+        background: #f1f5f9;
+        border-radius: 4px;
+      }
+      
+      #reportsContent::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+      }
+      
+      #reportsContent::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+      
+      /* Mobile responsive for reports */
+      @media (max-width: 768px) {
+        #reportsBox {
+          margin: 20px;
+          max-width: calc(100vw - 40px);
+        }
+        
+        #reportsContent {
+          max-height: 60vh;
+        }
+        
+        .filter-btn {
+          font-size: 12px;
+          padding: 4px 8px;
+        }
+        
+        .report-header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 8px;
+        }
+        
+        .report-details > div {
+          grid-template-columns: 1fr !important;
+        }
+      }
+
         .chat { min-height: calc(100vh - 56px - 160px); }
         .form-row { position:sticky; bottom:56px; background:var(--bg); padding:6px 0; }
         #textInput { font-size:16px; padding:12px; min-height:44px; }
@@ -9680,26 +9778,62 @@ CHAT_HTML = """
       </div>
     </div>
     <!-- Reports Management Panel -->
-    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-        <span>&#128203; Reports Management</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">&#128260; Refresh</button>
-          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">&#10005;</button>
+    <!-- Reports Overlay - Solid Popup Mode -->
+    <div id="reportsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10015;overflow:auto;">
+      <div id="reportsBox" style="position:relative;max-width:900px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
+        <div id="reportsHeader" style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary);background:var(--card);border-radius:12px 12px 0 0;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <strong style="font-size:16px;">📋 Reports Management</strong>
+            <div id="reportsCount" style="background:#374151;color:#fff;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500;">0 reports</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button id="detachReports" type="button" title="Detach to floating window" style="padding:6px 10px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;">🔗 Detach</button>
+            <button id="refreshReports" type="button" title="Refresh reports" style="padding:6px 10px;background:#059669;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;">🔄 Refresh</button>
+            <button id="closeReports" type="button" style="padding:6px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;">✕</button>
+          </div>
         </div>
-      </div>
-      <div id="reportsContent" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
-        <div id="reportsLoading" style="text-align:center;padding:30px;color:var(--muted);">
-          <div style="font-size:20px;margin-bottom:8px;">⏳</div>
-          <div>Loading reports...</div>
+        
+        <!-- Filter Bar -->
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:#f8fafc;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-weight:600;color:#374151;margin-right:8px;">Filter by status:</span>
+          <button class="filter-btn active" data-status="all" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">All</button>
+          <button class="filter-btn" data-status="pending" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Pending</button>
+          <button class="filter-btn" data-status="reviewed" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Reviewed</button>
+          <button class="filter-btn" data-status="resolved" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Resolved</button>
+          <button class="filter-btn" data-status="dismissed" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Dismissed</button>
         </div>
-        <div id="reportsEmpty" style="display:none;text-align:center;padding:30px;color:var(--muted);">
-          <div style="font-size:20px;margin-bottom:8px;">📄</div>
-          <div>No reports found</div>
+        
+        <!-- Reports Content -->
+        <div id="reportsContent" style="padding:16px;overflow-y:auto;max-height:70vh;color:var(--primary);">
+          <div id="reportsLoading" style="text-align:center;padding:40px;color:var(--muted);">
+            <div style="font-size:24px;margin-bottom:12px;">⏳</div>
+            <div style="font-size:16px;font-weight:500;">Loading reports...</div>
+          </div>
+          <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
+            <div style="font-size:24px;margin-bottom:12px;">📄</div>
+            <div style="font-size:16px;font-weight:500;">No reports found</div>
+            <div style="font-size:14px;margin-top:8px;">Try adjusting your filter or check back later.</div>
+          </div>
+          <div id="reportsList" style="display:none;"></div>
         </div>
-        <div id="reportsList" style="display:none;"></div>
       </div>
     </div>
+
+    <!-- Reports Panel - Floating Mode (Hidden by default) -->
+    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
+        <span>📋 Reports Management</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="attachReports" type="button" title="Attach to main window" style="padding:4px 8px;background:#6366f1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">📌 Attach</button>
+          <button id="refreshReportsFloat" type="button" title="Refresh reports" style="padding:4px 8px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">🔄</button>
+          <button id="closeReportsFloat" type="button" style="padding:4px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">✕</button>
+        </div>
+      </div>
+      <div id="reportsContentFloat" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
+        <!-- Content will be synced with main reports content -->
+      </div>
+    </div>
+
 
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -13842,10 +13976,39 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-        // Reports Management Functions
+        // Reports Management Functions - Enhanced Version
+        let currentReportsFilter = 'all';
+        let currentReportsOffset = 0;
+        let reportsMode = 'popup'; // 'popup' or 'floating'
+        let reportsList = [];
+
         function openReportsPanel() {
           try {
+            // Open in solid popup mode by default
+            document.getElementById('reportsOverlay').style.display = 'block';
+            reportsMode = 'popup';
+            loadReports();
+          } catch(e) {
+            console.error('Error opening reports panel:', e);
+          }
+        }
+
+        function closeReportsPanel() {
+          try {
+            document.getElementById('reportsOverlay').style.display = 'none';
+            document.getElementById('reportsPanel').style.display = 'none';
+          } catch(e) {
+            console.error('Error closing reports panel:', e);
+          }
+        }
+
+        function detachReports() {
+          try {
+            // Switch from popup to floating mode
+            document.getElementById('reportsOverlay').style.display = 'none';
             document.getElementById('reportsPanel').style.display = 'block';
+            reportsMode = 'floating';
+            
             // Make panel draggable
             const panel = document.getElementById("reportsPanel");
             const header = panel.querySelector("div");
@@ -13864,30 +14027,52 @@ function showToast(message, type = 'info') {
               panel.style.top = (initialY + e.clientY - startY) + "px";
             };
             document.onmouseup = () => { isDragging = false; };
-            loadReports();
+            
+            // Sync content to floating panel
+            syncReportsContent();
           } catch(e) {
-            console.error('Error opening reports panel:', e);
+            console.error('Error detaching reports:', e);
           }
         }
 
-        function closeReportsPanel() {
+        function attachReports() {
           try {
+            // Switch from floating to popup mode
             document.getElementById('reportsPanel').style.display = 'none';
+            document.getElementById('reportsOverlay').style.display = 'block';
+            reportsMode = 'popup';
           } catch(e) {
-            console.error('Error closing reports panel:', e);
+            console.error('Error attaching reports:', e);
+          }
+        }
+
+        function syncReportsContent() {
+          try {
+            const mainContent = document.getElementById('reportsList').innerHTML;
+            const floatContent = document.getElementById('reportsContentFloat');
+            if (floatContent) {
+              floatContent.innerHTML = `
+                <div id="reportsListFloat" style="display:block;">${mainContent}</div>
+              `;
+            }
+          } catch(e) {
+            console.error('Error syncing reports content:', e);
           }
         }
 
         function loadReports(status = 'all', offset = 0, limit = 50) {
           try {
+            currentReportsFilter = status;
+            currentReportsOffset = offset;
+            
             // Show loading state
             document.getElementById('reportsLoading').style.display = 'block';
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
             
-            // Emit fetch request
+            // Emit request to server
             socket.emit('fetch_reports', {
-              status: status,
+              status: status === 'all' ? null : status,
               offset: offset,
               limit: limit
             });
@@ -13896,168 +14081,137 @@ function showToast(message, type = 'info') {
           }
         }
 
-        function renderReports(data) {
+        function renderReports(reports, total) {
           try {
-            const reports = data.reports || [];
-            const reportsLoading = document.getElementById('reportsLoading');
-            const reportsEmpty = document.getElementById('reportsEmpty');
             const reportsList = document.getElementById('reportsList');
-
-            // Hide loading
-            reportsLoading.style.display = 'none';
-
+            const reportsCount = document.getElementById('reportsCount');
+            
+            // Update count badge
+            if (reportsCount) {
+              reportsCount.textContent = `${total} report${total !== 1 ? 's' : ''}`;
+            }
+            
+            // Hide loading, show content
+            document.getElementById('reportsLoading').style.display = 'none';
+            
             if (reports.length === 0) {
-              reportsEmpty.style.display = 'block';
-              reportsList.style.display = 'none';
+              document.getElementById('reportsEmpty').style.display = 'block';
+              document.getElementById('reportsList').style.display = 'none';
               return;
             }
-
-            // Show reports list
-            reportsEmpty.style.display = 'none';
-            reportsList.style.display = 'block';
             
-            // Render each report
-            reportsList.innerHTML = reports.map(report => renderReportItem(report)).join('');
+            document.getElementById('reportsEmpty').style.display = 'none';
+            document.getElementById('reportsList').style.display = 'block';
             
-            // Bind event handlers
-            bindReportHandlers();
+            // Generate report items with expandable dropdowns
+            let html = '';
+            reports.forEach(report => {
+              const statusColor = getStatusColor(report.status);
+              const statusBadge = `<span style="background:${statusColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;">${report.status.toUpperCase()}</span>`;
+              
+              html += `
+                <div class="report-item" style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;background:var(--card);">
+                  <div class="report-header" onclick="toggleReportDetails(${report.id})" style="padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;background:#f8fafc;border-bottom:1px solid #e5e7eb;">
+                    <div style="flex:1;">
+                      <div style="font-weight:600;color:#374151;margin-bottom:4px;">
+                        <span id="report-arrow-${report.id}" style="margin-right:8px;transition:transform 0.2s;">▶</span>
+                        User Reported: ${report.reason}
+                      </div>
+                      <div style="font-size:13px;color:#6b7280;">
+                        <strong>${report.reporter_username}</strong> reported <strong>${report.target_username || report.target_id}</strong> • ${formatDate(report.created_at)}
+                      </div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      ${statusBadge}
+                    </div>
+                  </div>
+                  <div id="report-details-${report.id}" class="report-details" style="display:none;padding:16px;border-top:1px solid #e5e7eb;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+                      <div>
+                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Report Type</div>
+                        <div style="color:#6b7280;">${report.report_type}</div>
+                      </div>
+                      <div>
+                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Target</div>
+                        <div style="color:#6b7280;">${report.target_username || report.target_id}</div>
+                      </div>
+                    </div>
+                    ${report.details ? `
+                      <div style="margin-bottom:16px;">
+                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Details</div>
+                        <div style="color:#6b7280;background:#f9fafb;padding:8px;border-radius:4px;border:1px solid #e5e7eb;">${report.details}</div>
+                      </div>
+                    ` : ''}
+                    ${report.admin_notes ? `
+                      <div style="margin-bottom:16px;">
+                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Admin Notes</div>
+                        <div style="color:#6b7280;background:#fef3c7;padding:8px;border-radius:4px;border:1px solid #fbbf24;">${report.admin_notes}</div>
+                      </div>
+                    ` : ''}
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                      <select id="status-${report.id}" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;">
+                        <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
+                        <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
+                        <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
+                        <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
+                      </select>
+                      <input id="notes-${report.id}" placeholder="Add admin notes..." value="${report.admin_notes || ''}" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;" />
+                      <button onclick="updateReportStatus(${report.id})" style="padding:6px 12px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;">Update</button>
+                      <button onclick="deleteReport(${report.id})" style="padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">Delete</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            });
+            
+            reportsList.innerHTML = html;
+            
+            // Sync to floating panel if in floating mode
+            if (reportsMode === 'floating') {
+              syncReportsContent();
+            }
+            
           } catch(e) {
             console.error('Error rendering reports:', e);
           }
         }
 
-        function renderReportItem(report) {
-          const statusColors = {
-            'pending': '#f59e0b',
-            'reviewed': '#3b82f6',
-            'resolved': '#10b981',
-            'dismissed': '#6b7280'
-          };
-          
-          const statusColor = statusColors[report.status] || '#6b7280';
-          const createdDate = new Date(report.created_at).toLocaleString();
-          const resolvedInfo = report.resolved_at ? 
-            `<div style="font-size:11px;color:var(--muted);margin-top:4px">
-              Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
-            </div>` : '';
-
-          return `
-            <div class="report-item" data-report-id="${report.id}" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--card);font-size:12px;">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
-                <div>
-                  <span style="font-weight:bold;color:var(--primary);">${report.report_type.toUpperCase()}</span>
-                  <span style="background:${statusColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px;">${report.status.toUpperCase()}</span>
-                </div>
-                <div style="font-size:10px;color:var(--muted);">${createdDate}</div>
-              </div>
-              <div style="margin-bottom:6px;font-size:11px;">
-                <strong>Target:</strong> ${report.target_username}<br>
-                <strong>Reporter:</strong> ${report.reporter_username}<br>
-                <strong>Reason:</strong> ${report.reason}
-              </div>
-              ${report.details ? `<div style="margin-bottom:6px;padding:6px;background:var(--muted);border-radius:3px;font-size:11px;">${report.details}</div>` : ''}
-              ${report.admin_notes ? `<div style="margin-bottom:6px;font-size:11px;"><strong>Admin Notes:</strong><br><div style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:3px;">${report.admin_notes}</div></div>` : ''}
-              ${resolvedInfo}
-              <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;">
-                <select class="report-status-select" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
-                  <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
-                  <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
-                  <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
-                  <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
-                </select>
-                <input class="report-notes-input" type="text" placeholder="Admin notes..." value="${report.admin_notes || ''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
-                <div style="display:flex;gap:4px;">
-                  <button class="update-report-btn" type="button" style="flex:1;padding:3px 8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Update</button>
-                  <button class="delete-report-btn" type="button" style="flex:1;padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Delete</button>
-                </div>
-              </div>
-            </div>
-          `;
-        }
-
-        function bindReportHandlers() {
+        function toggleReportDetails(reportId) {
           try {
-            // Update report handlers
-            document.querySelectorAll('.update-report-btn').forEach(btn => {
-              btn.onclick = function() {
-                const reportItem = this.closest('.report-item');
-                const reportId = reportItem.dataset.reportId;
-                const status = reportItem.querySelector('.report-status-select').value;
-                const notes = reportItem.querySelector('.report-notes-input').value;
-                
-                socket.emit('update_report_status', {
-                  report_id: parseInt(reportId),
-                  status: status,
-                  admin_notes: notes
-                });
-              };
-            });
-
-            // Delete report handlers
-            document.querySelectorAll('.delete-report-btn').forEach(btn => {
-              btn.onclick = function() {
-                const reportItem = this.closest('.report-item');
-                const reportId = reportItem.dataset.reportId;
-                
-                if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
-                  socket.emit('delete_report', {
-                    report_id: parseInt(reportId)
-                  });
-                }
-              };
-            });
+            const details = document.getElementById(`report-details-${reportId}`);
+            const arrow = document.getElementById(`report-arrow-${reportId}`);
+            
+            if (details.style.display === 'none') {
+              details.style.display = 'block';
+              arrow.style.transform = 'rotate(90deg)';
+              arrow.textContent = '▼';
+            } else {
+              details.style.display = 'none';
+              arrow.style.transform = 'rotate(0deg)';
+              arrow.textContent = '▶';
+            }
           } catch(e) {
-            console.error('Error binding report handlers:', e);
+            console.error('Error toggling report details:', e);
           }
         }
 
-        // Socket.IO event listeners for reports
-        socket.on('reports_data', renderReports);
-        
-        socket.on('reports_error', function(data) {
-          try {
-            document.getElementById('reportsLoading').style.display = 'none';
-            showToast('Error loading reports: ' + (data.message || 'Unknown error'), 'error');
-          } catch(e) {
-            console.error('Error handling reports_error:', e);
+        function getStatusColor(status) {
+          switch(status) {
+            case 'pending': return '#f59e0b';
+            case 'reviewed': return '#3b82f6';
+            case 'resolved': return '#059669';
+            case 'dismissed': return '#6b7280';
+            default: return '#374151';
           }
-        });
+        }
 
-        socket.on('report_update_success', function(data) {
+        function formatDate(dateStr) {
           try {
-            showToast('Report updated successfully!', 'ok');
-            loadReports(); // Refresh the list
+            const date = new Date(dateStr);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
           } catch(e) {
-            console.error('Error handling report_update_success:', e);
-          }
-        });
-
-        socket.on('report_update_error', function(data) {
-          try {
-            showToast('Error updating report: ' + (data.message || 'Unknown error'), 'error');
-          } catch(e) {
-            console.error('Error handling report_update_error:', e);
-          }
-        });
-
-        socket.on('report_delete_success', function(data) {
-          try {
-            showToast('Report deleted successfully!', 'ok');
-            loadReports(); // Refresh the list
-          } catch(e) {
-            console.error('Error handling report_delete_success:', e);
-          }
-        });
-
-        socket.on('report_delete_error', function(data) {
-          try {
-            showToast('Error deleting report: ' + (data.message || 'Unknown error'), 'error');
-          } catch(e) {
-            console.error('Error handling report_delete_error:', e);
-          }
-        });
-
-        // Bind reports button click handler
+            return dateStr;
+        // Bind reports button click handlers
         try {
           const reportsBtn = document.getElementById('btnReportsSettings');
           if (reportsBtn) {
@@ -14067,16 +14221,135 @@ function showToast(message, type = 'info') {
           console.error('Error binding reports button:', e);
         }
 
-        // Bind panel close handlers
+        // Bind panel close and action handlers
         try {
           const closeBtn = document.getElementById('closeReports');
           const refreshBtn = document.getElementById('refreshReports');
+          const detachBtn = document.getElementById('detachReports');
+          const attachBtn = document.getElementById('attachReports');
+          const closeBtnFloat = document.getElementById('closeReportsFloat');
+          const refreshBtnFloat = document.getElementById('refreshReportsFloat');
           
           if (closeBtn) closeBtn.onclick = closeReportsPanel;
-          if (refreshBtn) refreshBtn.onclick = () => loadReports();
+          if (refreshBtn) refreshBtn.onclick = () => loadReports(currentReportsFilter);
+          if (detachBtn) detachBtn.onclick = detachReports;
+          if (attachBtn) attachBtn.onclick = attachReports;
+          if (closeBtnFloat) closeBtnFloat.onclick = closeReportsPanel;
+          if (refreshBtnFloat) refreshBtnFloat.onclick = () => loadReports(currentReportsFilter);
+          
+          // Setup filter buttons
+          setupFilterButtons();
+          
+          // Close overlay when clicking outside
+          document.getElementById('reportsOverlay').onclick = function(e) {
+            if (e.target === this) {
+              closeReportsPanel();
+            }
+          };
+          
         } catch(e) {
           console.error('Error binding panel handlers:', e);
         }
+
+          }
+        }
+
+        function updateReportStatus(reportId) {
+          try {
+            const status = document.getElementById(`status-${reportId}`).value;
+            const notes = document.getElementById(`notes-${reportId}`).value;
+            
+            socket.emit('update_report_status', {
+              report_id: reportId,
+              status: status,
+              admin_notes: notes
+            });
+          } catch(e) {
+            console.error('Error updating report status:', e);
+          }
+        }
+
+        function deleteReport(reportId) {
+          try {
+            if (confirm('Are you sure you want to delete this report?')) {
+              socket.emit('delete_report', { report_id: reportId });
+            }
+          } catch(e) {
+            console.error('Error deleting report:', e);
+          }
+        }
+
+        // Filter button handlers
+        function setupFilterButtons() {
+          try {
+            const filterButtons = document.querySelectorAll('.filter-btn');
+            filterButtons.forEach(btn => {
+              btn.addEventListener('click', function() {
+                // Remove active class from all buttons
+                filterButtons.forEach(b => {
+                  b.classList.remove('active');
+                  b.style.background = '#fff';
+                  b.style.color = '#374151';
+                });
+                
+                // Add active class to clicked button
+                this.classList.add('active');
+                this.style.background = '#374151';
+                this.style.color = '#fff';
+                
+                // Load reports with new filter
+                const status = this.dataset.status;
+                loadReports(status);
+              });
+            });
+          } catch(e) {
+            console.error('Error setting up filter buttons:', e);
+          }
+        }
+
+        // Socket event handlers for reports
+        socket.on('reports_data', function(data) {
+          try {
+            renderReports(data.reports || [], data.total || 0);
+          } catch(e) {
+            console.error('Error handling reports data:', e);
+          }
+        });
+
+        socket.on('reports_error', function(data) {
+          try {
+            document.getElementById('reportsLoading').style.display = 'none';
+            document.getElementById('reportsEmpty').style.display = 'block';
+            document.getElementById('reportsEmpty').innerHTML = `
+              <div style="text-align:center;padding:40px;color:var(--muted);">
+                <div style="font-size:24px;margin-bottom:12px;">⚠️</div>
+                <div style="font-size:16px;font-weight:500;">Error loading reports</div>
+                <div style="font-size:14px;margin-top:8px;">${data.message || 'Unknown error occurred'}</div>
+              </div>
+            `;
+          } catch(e) {
+            console.error('Error handling reports error:', e);
+          }
+        });
+
+        socket.on('report_updated', function(data) {
+          try {
+            // Reload reports to show updated data
+            loadReports(currentReportsFilter, currentReportsOffset);
+          } catch(e) {
+            console.error('Error handling report update:', e);
+          }
+        });
+
+        socket.on('report_deleted', function(data) {
+          try {
+            // Reload reports to remove deleted item
+            loadReports(currentReportsFilter, currentReportsOffset);
+          } catch(e) {
+            console.error('Error handling report deletion:', e);
+          }
+        });
+
     </script>
 
 </body>

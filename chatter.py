@@ -13845,7 +13845,6 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-    </script>
         // Reports Management Functions
         function openReportsPanel() {
           try {
@@ -14063,6 +14062,7 @@ function showToast(message, type = 'info') {
         } catch(e) {
           console.error('Error binding panel handlers:', e);
         }
+    </script>
 
 </body>
 </html>

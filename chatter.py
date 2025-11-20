@@ -4052,10 +4052,6 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-def is_admin(username=None):
-    if username is None:
-        username = session.get("username")
-    return username in ADMINS
 
 def is_ip_banned(ip_address):
     # Never ban loopback to avoid locking out all local users/admin
@@ -8779,7 +8775,7 @@ def on_fetch_reports(data):
         emit("reports_error", {"message": "Authentication required"})
         return
     
-    if not is_admin():
+    if not is_admin(username):
         emit("reports_error", {"message": "Admin access required"})
         return
     
@@ -8856,7 +8852,7 @@ def on_update_report_status(data):
         emit("report_update_error", {"message": "Authentication required"})
         return
     
-    if not is_admin():
+    if not is_admin(username):
         emit("report_update_error", {"message": "Admin access required"})
         return
     
@@ -8910,7 +8906,7 @@ def on_delete_report(data):
         emit("report_delete_error", {"message": "Authentication required"})
         return
     
-    if not is_admin():
+    if not is_admin(username):
         emit("report_delete_error", {"message": "Admin access required"})
         return
     
@@ -9406,7 +9402,7 @@ CHAT_HTML = """
                     <span id="onlineBtn" style="color:blue;cursor:pointer;text-decoration:underline">Online (<span id="onlineCount">0</span>)</span>
                 </div>
                 <div style="display:flex;gap:10px;align-items:center">
-                    {% if username in superadmins %}
+                    {% if username in superadmins or is_admin %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
                     <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
@@ -9562,7 +9558,7 @@ CHAT_HTML = """
     <!-- Mobile Navigation -->
     <nav id="mobileNav" style="display:none;">
         <button id="tabPublic" type="button"><i class="icon-chat"></i><small>Public</small></button>
-        {% if username in superadmins %}
+        {% if username in superadmins or is_admin %}
         <button id="btnAdminDash" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
         {% endif %}
         <button id="tabDMs" type="button"><i class="icon-users"></i><small>DMs</small></button>
@@ -9593,7 +9589,7 @@ CHAT_HTML = """
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;">
           <span>Settings</span>
           <div style="display:flex;gap:8px;align-items:center">
-            {% if username in superadmins %}
+            {% if username in superadmins or is_admin %}
             <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
             <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">&#128203; Reports</button>
             {% endif %}
@@ -9683,7 +9679,7 @@ CHAT_HTML = """
       </div>
     </div>
     <!-- Reports Management Panel -->
-    <div id="reportsPanel" style="display:none;position:fixed;top:20px;right:20px;width:400px;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
+    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
         <span>&#128203; Reports Management</span>
         <div style="display:flex;gap:8px;align-items:center">
@@ -12272,7 +12268,7 @@ CHAT_HTML = """
         } catch(e){}
 
         // Admin Dashboard (bind header, settings, and mobile buttons)
-        {% if username in superadmins %}
+        {% if username in superadmins or is_admin %}
         (function(){
           async function adminOverview(){
             const r = await fetch('/api/admin/overview');
@@ -13849,6 +13845,24 @@ function showToast(message, type = 'info') {
         function openReportsPanel() {
           try {
             document.getElementById('reportsPanel').style.display = 'block';
+            // Make panel draggable
+            const panel = document.getElementById("reportsPanel");
+            const header = panel.querySelector("div");
+            let isDragging = false, startX, startY, initialX, initialY;
+            header.onmousedown = (e) => {
+              isDragging = true;
+              startX = e.clientX; startY = e.clientY;
+              const rect = panel.getBoundingClientRect();
+              initialX = rect.left; initialY = rect.top;
+              panel.style.transform = "none";
+              panel.style.left = initialX + "px"; panel.style.top = initialY + "px";
+            };
+            document.onmousemove = (e) => {
+              if (!isDragging) return;
+              panel.style.left = (initialX + e.clientX - startX) + "px";
+              panel.style.top = (initialY + e.clientY - startY) + "px";
+            };
+            document.onmouseup = () => { isDragging = false; };
             loadReports();
           } catch(e) {
             console.error('Error opening reports panel:', e);

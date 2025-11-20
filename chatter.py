@@ -8775,7 +8775,7 @@ def on_fetch_reports(data):
         emit("reports_error", {"message": "Authentication required"})
         return
     
-    if not is_admin(username):
+    if not (is_admin(username) or is_superadmin(username)):
         emit("reports_error", {"message": "Admin access required"})
         return
     
@@ -8852,7 +8852,7 @@ def on_update_report_status(data):
         emit("report_update_error", {"message": "Authentication required"})
         return
     
-    if not is_admin(username):
+    if not (is_admin(username) or is_superadmin(username)):
         emit("report_update_error", {"message": "Admin access required"})
         return
     
@@ -8906,7 +8906,7 @@ def on_delete_report(data):
         emit("report_delete_error", {"message": "Authentication required"})
         return
     
-    if not is_admin(username):
+    if not (is_admin(username) or is_superadmin(username)):
         emit("report_delete_error", {"message": "Admin access required"})
         return
     

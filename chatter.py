@@ -8770,6 +8770,173 @@ def on_report_user(data):
     except Exception as e:
         emit("report_error", {"message": "Failed to submit report"})
 
+# Admin Report Management Handlers
+@socketio.on("fetch_reports")
+def on_fetch_reports(data):
+    """Fetch all reports for admin review"""
+    username = session.get("username")
+    if not username:
+        emit("reports_error", {"message": "Authentication required"})
+        return
+    
+    if not is_admin():
+        emit("reports_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        db = get_db()
+        cur = db.cursor()
+        
+        # Get filter parameters
+        status_filter = data.get("status", "all")
+        offset = data.get("offset", 0)
+        limit = min(data.get("limit", 50), 100)  # Max 100 reports at once
+        
+        # Build query based on status filter
+        if status_filter == "all":
+            cur.execute("""
+                SELECT id, report_type, target_id, target_username, reason, details,
+                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
+                FROM reports
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        else:
+            cur.execute("""
+                SELECT id, report_type, target_id, target_username, reason, details,
+                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
+                FROM reports
+                WHERE status = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (status_filter, limit, offset))
+        
+        reports = cur.fetchall()
+        
+        # Convert to list of dictionaries
+        reports_list = []
+        for report in reports:
+            reports_list.append({
+                "id": report[0],
+                "report_type": report[1],
+                "target_id": report[2],
+                "target_username": report[3],
+                "reason": report[4],
+                "details": report[5],
+                "reporter_username": report[6],
+                "created_at": report[7],
+                "status": report[8],
+                "admin_notes": report[9],
+                "resolved_at": report[10],
+                "resolved_by": report[11]
+            })
+        
+        # Get total count
+        if status_filter == "all":
+            cur.execute("SELECT COUNT(*) FROM reports")
+        else:
+            cur.execute("SELECT COUNT(*) FROM reports WHERE status = ?", (status_filter,))
+        total_count = cur.fetchone()[0]
+        
+        emit("reports_data", {
+            "reports": reports_list,
+            "total": total_count,
+            "offset": offset,
+            "limit": limit
+        })
+        
+    except Exception as e:
+        emit("reports_error", {"message": "Failed to fetch reports"})
+
+@socketio.on("update_report_status")
+def on_update_report_status(data):
+    """Update report status (resolve, dismiss, etc.)"""
+    username = session.get("username")
+    if not username:
+        emit("report_update_error", {"message": "Authentication required"})
+        return
+    
+    if not is_admin():
+        emit("report_update_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        report_id = data.get("report_id")
+        new_status = data.get("status")
+        admin_notes = data.get("admin_notes", "")
+        
+        if not report_id or not new_status:
+            emit("report_update_error", {"message": "Missing required fields"})
+            return
+        
+        # Validate status
+        valid_statuses = ["pending", "reviewed", "resolved", "dismissed"]
+        if new_status not in valid_statuses:
+            emit("report_update_error", {"message": "Invalid status"})
+            return
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Update report
+        if new_status in ["resolved", "dismissed"]:
+            cur.execute("""
+                UPDATE reports 
+                SET status = ?, admin_notes = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
+                WHERE id = ?
+            """, (new_status, admin_notes, username, report_id))
+        else:
+            cur.execute("""
+                UPDATE reports 
+                SET status = ?, admin_notes = ?
+                WHERE id = ?
+            """, (new_status, admin_notes, report_id))
+        
+        if cur.rowcount == 0:
+            emit("report_update_error", {"message": "Report not found"})
+            return
+        
+        db.commit()
+        emit("report_update_success", {"message": "Report updated successfully"})
+        
+    except Exception as e:
+        emit("report_update_error", {"message": "Failed to update report"})
+
+@socketio.on("delete_report")
+def on_delete_report(data):
+    """Delete a report (admin only)"""
+    username = session.get("username")
+    if not username:
+        emit("report_delete_error", {"message": "Authentication required"})
+        return
+    
+    if not is_admin():
+        emit("report_delete_error", {"message": "Admin access required"})
+        return
+    
+    try:
+        report_id = data.get("report_id")
+        
+        if not report_id:
+            emit("report_delete_error", {"message": "Report ID required"})
+            return
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Delete report
+        cur.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        
+        if cur.rowcount == 0:
+            emit("report_delete_error", {"message": "Report not found"})
+            return
+        
+        db.commit()
+        emit("report_delete_success", {"message": "Report deleted successfully"})
+        
+    except Exception as e:
+        emit("report_delete_error", {"message": "Failed to delete report"})
+
 
 # HTML Templates (unchanged)
 BASE_CSS = """
@@ -9431,7 +9598,8 @@ CHAT_HTML = """
             <button id="closeSettings" type="button" class="btn btn-outline">✕</button>
           </div>
         </div>
-        <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
+            <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
+            <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">📋 Reports</button>
           <div>
             <label><strong>Username</strong></label>
             <div style="display:flex;gap:8px;align-items:center">
@@ -9513,6 +9681,28 @@ CHAT_HTML = """
         </div>
       </div>
     </div>
+    <!-- Reports Management Panel -->
+    <div id="reportsPanel" style="display:none;position:fixed;top:20px;right:20px;width:400px;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
+        <span>📋 Reports Management</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">🔄 Refresh</button>
+          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">✕</button>
+        </div>
+      </div>
+      <div id="reportsContent" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
+        <div id="reportsLoading" style="text-align:center;padding:30px;color:var(--muted);">
+          <div style="font-size:20px;margin-bottom:8px;">⏳</div>
+          <div>Loading reports...</div>
+        </div>
+        <div id="reportsEmpty" style="display:none;text-align:center;padding:30px;color:var(--muted);">
+          <div style="font-size:20px;margin-bottom:8px;">📄</div>
+          <div>No reports found</div>
+        </div>
+        <div id="reportsList" style="display:none;"></div>
+      </div>
+    </div>
+
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
@@ -13655,6 +13845,224 @@ function showToast(message, type = 'info') {
 }
 
     </script>
+        // Reports Management Functions
+        function openReportsPanel() {
+          try {
+            document.getElementById('reportsPanel').style.display = 'block';
+            loadReports();
+          } catch(e) {
+            console.error('Error opening reports panel:', e);
+          }
+        }
+
+        function closeReportsPanel() {
+          try {
+            document.getElementById('reportsPanel').style.display = 'none';
+          } catch(e) {
+            console.error('Error closing reports panel:', e);
+          }
+        }
+
+        function loadReports(status = 'all', offset = 0, limit = 50) {
+          try {
+            // Show loading state
+            document.getElementById('reportsLoading').style.display = 'block';
+            document.getElementById('reportsEmpty').style.display = 'none';
+            document.getElementById('reportsList').style.display = 'none';
+            
+            // Emit fetch request
+            socket.emit('fetch_reports', {
+              status: status,
+              offset: offset,
+              limit: limit
+            });
+          } catch(e) {
+            console.error('Error loading reports:', e);
+          }
+        }
+
+        function renderReports(data) {
+          try {
+            const reports = data.reports || [];
+            const reportsLoading = document.getElementById('reportsLoading');
+            const reportsEmpty = document.getElementById('reportsEmpty');
+            const reportsList = document.getElementById('reportsList');
+
+            // Hide loading
+            reportsLoading.style.display = 'none';
+
+            if (reports.length === 0) {
+              reportsEmpty.style.display = 'block';
+              reportsList.style.display = 'none';
+              return;
+            }
+
+            // Show reports list
+            reportsEmpty.style.display = 'none';
+            reportsList.style.display = 'block';
+            
+            // Render each report
+            reportsList.innerHTML = reports.map(report => renderReportItem(report)).join('');
+            
+            // Bind event handlers
+            bindReportHandlers();
+          } catch(e) {
+            console.error('Error rendering reports:', e);
+          }
+        }
+
+        function renderReportItem(report) {
+          const statusColors = {
+            'pending': '#f59e0b',
+            'reviewed': '#3b82f6',
+            'resolved': '#10b981',
+            'dismissed': '#6b7280'
+          };
+          
+          const statusColor = statusColors[report.status] || '#6b7280';
+          const createdDate = new Date(report.created_at).toLocaleString();
+          const resolvedInfo = report.resolved_at ? 
+            `<div style="font-size:11px;color:var(--muted);margin-top:4px">
+              Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
+            </div>` : '';
+
+          return `
+            <div class="report-item" data-report-id="${report.id}" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--card);font-size:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+                <div>
+                  <span style="font-weight:bold;color:var(--primary);">${report.report_type.toUpperCase()}</span>
+                  <span style="background:${statusColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px;">${report.status.toUpperCase()}</span>
+                </div>
+                <div style="font-size:10px;color:var(--muted);">${createdDate}</div>
+              </div>
+              <div style="margin-bottom:6px;font-size:11px;">
+                <strong>Target:</strong> ${report.target_username}<br>
+                <strong>Reporter:</strong> ${report.reporter_username}<br>
+                <strong>Reason:</strong> ${report.reason}
+              </div>
+              ${report.details ? `<div style="margin-bottom:6px;padding:6px;background:var(--muted);border-radius:3px;font-size:11px;">${report.details}</div>` : ''}
+              ${report.admin_notes ? `<div style="margin-bottom:6px;font-size:11px;"><strong>Admin Notes:</strong><br><div style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:3px;">${report.admin_notes}</div></div>` : ''}
+              ${resolvedInfo}
+              <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;">
+                <select class="report-status-select" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
+                  <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
+                  <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
+                  <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
+                  <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
+                </select>
+                <input class="report-notes-input" type="text" placeholder="Admin notes..." value="${report.admin_notes || ''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
+                <div style="display:flex;gap:4px;">
+                  <button class="update-report-btn" type="button" style="flex:1;padding:3px 8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Update</button>
+                  <button class="delete-report-btn" type="button" style="flex:1;padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Delete</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
+        function bindReportHandlers() {
+          try {
+            // Update report handlers
+            document.querySelectorAll('.update-report-btn').forEach(btn => {
+              btn.onclick = function() {
+                const reportItem = this.closest('.report-item');
+                const reportId = reportItem.dataset.reportId;
+                const status = reportItem.querySelector('.report-status-select').value;
+                const notes = reportItem.querySelector('.report-notes-input').value;
+                
+                socket.emit('update_report_status', {
+                  report_id: parseInt(reportId),
+                  status: status,
+                  admin_notes: notes
+                });
+              };
+            });
+
+            // Delete report handlers
+            document.querySelectorAll('.delete-report-btn').forEach(btn => {
+              btn.onclick = function() {
+                const reportItem = this.closest('.report-item');
+                const reportId = reportItem.dataset.reportId;
+                
+                if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
+                  socket.emit('delete_report', {
+                    report_id: parseInt(reportId)
+                  });
+                }
+              };
+            });
+          } catch(e) {
+            console.error('Error binding report handlers:', e);
+          }
+        }
+
+        // Socket.IO event listeners for reports
+        socket.on('reports_data', renderReports);
+        
+        socket.on('reports_error', function(data) {
+          try {
+            document.getElementById('reportsLoading').style.display = 'none';
+            showToast('Error loading reports: ' + (data.message || 'Unknown error'), 'error');
+          } catch(e) {
+            console.error('Error handling reports_error:', e);
+          }
+        });
+
+        socket.on('report_update_success', function(data) {
+          try {
+            showToast('Report updated successfully!', 'ok');
+            loadReports(); // Refresh the list
+          } catch(e) {
+            console.error('Error handling report_update_success:', e);
+          }
+        });
+
+        socket.on('report_update_error', function(data) {
+          try {
+            showToast('Error updating report: ' + (data.message || 'Unknown error'), 'error');
+          } catch(e) {
+            console.error('Error handling report_update_error:', e);
+          }
+        });
+
+        socket.on('report_delete_success', function(data) {
+          try {
+            showToast('Report deleted successfully!', 'ok');
+            loadReports(); // Refresh the list
+          } catch(e) {
+            console.error('Error handling report_delete_success:', e);
+          }
+        });
+
+        socket.on('report_delete_error', function(data) {
+          try {
+            showToast('Error deleting report: ' + (data.message || 'Unknown error'), 'error');
+          } catch(e) {
+            console.error('Error handling report_delete_error:', e);
+          }
+        });
+
+        // Bind reports button click handler
+        try {
+          const reportsBtn = document.getElementById('btnReportsSettings');
+          if (reportsBtn) {
+            reportsBtn.onclick = openReportsPanel;
+          }
+        } catch(e) {
+          console.error('Error binding reports button:', e);
+        }
+
+        // Bind panel close handlers
+        try {
+          const closeBtn = document.getElementById('closeReports');
+          const refreshBtn = document.getElementById('refreshReports');
+          
+          if (closeBtn) closeBtn.onclick = closeReportsPanel;
+          if (refreshBtn) refreshBtn.onclick = () => loadReports();
+        } catch(e) {
+          console.error('Error binding panel handlers:', e);
+        }
+
 </body>
 </html>
 """

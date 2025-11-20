@@ -8821,10 +8821,10 @@ def on_fetch_reports(data):
                 "reason": report[4],
                 "details": report[5],
                 "reporter_username": report[6],
-                "created_at": report[7],
+                "created_at": str(report[7]) if report[7] else None,
                 "status": report[8],
                 "admin_notes": report[9],
-                "resolved_at": report[10],
+                "resolved_at": str(report[10]) if report[10] else None,
                 "resolved_by": report[11]
             })
         

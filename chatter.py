@@ -9594,12 +9594,12 @@ CHAT_HTML = """
           <div style="display:flex;gap:8px;align-items:center">
             {% if username in superadmins %}
             <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
+            <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">📋 Reports</button>
             {% endif %}
             <button id="closeSettings" type="button" class="btn btn-outline">✕</button>
           </div>
         </div>
-            <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
-            <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">📋 Reports</button>
+        <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
           <div>
             <label><strong>Username</strong></label>
             <div style="display:flex;gap:8px;align-items:center">

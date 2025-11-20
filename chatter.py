@@ -8769,6 +8769,7 @@ def on_report_user(data):
 # Admin Report Management Handlers
 @socketio.on("fetch_reports")
 def on_fetch_reports(data):
+    print(f"Fetch reports called with data: {data}")  # Debug
     """Fetch all reports for admin review"""
     username = session.get("username")
     if not username:
@@ -8842,7 +8843,7 @@ def on_fetch_reports(data):
         })
         
     except Exception as e:
-        emit("reports_error", {"message": "Failed to fetch reports"})
+        print(f"Reports fetch error: {str(e)}"); emit("reports_error", {"message": f"Failed to fetch reports: {str(e)}"})
 
 @socketio.on("update_report_status")
 def on_update_report_status(data):

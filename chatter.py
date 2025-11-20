@@ -9065,6 +9065,7 @@ small {
 .btn-warn:hover { background:#b45309; }
 .btn-danger { background:#b91c1c; color:#fff; }
 .btn-danger:hover { background:#991b1b; }
+#btnReportsSettings { display:inline-block !important; visibility:visible !important; opacity:1 !important; }
 .btn-outline { background:transparent; color:var(--primary); border:1px solid #4b5563; }
 .btn-outline:hover { background:#1f2937; color:#e5e7eb; }
 
@@ -9430,7 +9431,7 @@ CHAT_HTML = """
                         <strong>Replying to <span id="replyUser"></span></strong>
                         <div id="replySnippet" style="color:var(--muted);margin-top:4px;max-width:660px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
                     </div>
-                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">✕</button>
+                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">&#10005;</button>
                 </div>
             </div>
             <form id="sendForm" enctype="multipart/form-data">
@@ -9447,7 +9448,7 @@ CHAT_HTML = """
       <div style="position:relative;max-width:680px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
           <strong>📌 Pinned Messages</strong>
-          <button id="closePinsOverlay" type="button" style="padding:6px 10px">✕</button>
+          <button id="closePinsOverlay" type="button" style="padding:6px 10px">&#10005;</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
       </div>
@@ -9458,7 +9459,7 @@ CHAT_HTML = """
       <div id="adminBox" style="position:relative;max-width:720px;margin:50px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
           <strong>Admin Dashboard</strong>
-          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
+          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">&#10005;</button>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:16px;color:var(--primary)">
           <div id="idResetDropdown" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card); display:none">
@@ -9575,7 +9576,7 @@ CHAT_HTML = """
       <div id="chatDialogBox" style="background:var(--card);border:1px solid var(--border);border-radius:12px;max-width:520px;width:92%;box-shadow:0 10px 40px rgba(0,0,0,0.3);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;color:var(--primary)">
           <strong id="chatDialogTitle">Dialog</strong>
-          <button id="chatDialogClose" class="btn btn-outline" type="button">✕</button>
+          <button id="chatDialogClose" class="btn btn-outline" type="button">&#10005;</button>
         </div>
         <form id="chatDialogForm" style="padding:14px;display:flex;flex-direction:column;gap:10px"></form>
         <div style="padding:12px 14px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
@@ -9594,9 +9595,9 @@ CHAT_HTML = """
           <div style="display:flex;gap:8px;align-items:center">
             {% if username in superadmins %}
             <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
-            <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">📋 Reports</button>
+            <button id="btnReportsSettings" type="button" title="Reports Management" class="btn btn-danger">&#128203; Reports</button>
             {% endif %}
-            <button id="closeSettings" type="button" class="btn btn-outline">✕</button>
+            <button id="closeSettings" type="button" class="btn btn-outline">&#10005;</button>
           </div>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
@@ -9684,10 +9685,10 @@ CHAT_HTML = """
     <!-- Reports Management Panel -->
     <div id="reportsPanel" style="display:none;position:fixed;top:20px;right:20px;width:400px;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-        <span>📋 Reports Management</span>
+        <span>&#128203; Reports Management</span>
         <div style="display:flex;gap:8px;align-items:center">
-          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">🔄 Refresh</button>
-          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">✕</button>
+          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">&#128260; Refresh</button>
+          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">&#10005;</button>
         </div>
       </div>
       <div id="reportsContent" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
@@ -10534,7 +10535,7 @@ CHAT_HTML = """
           
           // Add close button to pinned message
           const closeBtn = document.createElement("button");
-          closeBtn.innerHTML = "✕";
+          closeBtn.innerHTML = "&#10005;";
           closeBtn.style.cssText = "position:absolute;top:4px;right:6px;background:none;border:none;color:#f59e0b;font-size:16px;cursor:pointer;padding:2px 4px;border-radius:3px";
           closeBtn.title = "Close pinned message";
           closeBtn.onclick = (e) => {

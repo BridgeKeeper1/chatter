@@ -465,7 +465,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['warning_count'] += 1
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_warnings_issued'] += 1
-            return 'warning', "?? Warning: Please avoid spamming. Continued violations may result in restrictions."
+            return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
         
         elif total_violations <= 3:
             # Second/third violation - slow mode
@@ -474,7 +474,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['slow_mode_until'] = now + slow_duration
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
-            return 'slow_mode', f"?? Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
+            return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
         
         else:
             # Fourth+ violation - restricted state
@@ -483,10 +483,10 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['slow_mode_until'] = now + restriction_duration
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_restrictions_applied'] += 1
-            return 'restricted', f"?? Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
+            return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
     
     except Exception:
-        return 'warning', "?? Please avoid spamming."
+        return 'warning', "⚠️ Please avoid spamming."
 
 def _is_user_in_slow_mode(username):
     """Check if user is currently in slow mode"""
@@ -512,7 +512,7 @@ def _should_apply_individual_slow_mode(username):
         recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
         
         if len(recent_messages) >= 10:  # 10+ messages in last minute
-            return True, "?? Automatic slow mode: Too many messages in a short time."
+            return True, "🐌 Automatic slow mode: Too many messages in a short time."
         
         # Check for rapid large messages
         recent_large = 0
@@ -521,7 +521,7 @@ def _should_apply_individual_slow_mode(username):
                 recent_large += 1
         
         if recent_large >= 3:  # 3+ large messages recently
-            return True, "?? Automatic slow mode: Multiple large messages detected."
+            return True, "🐌 Automatic slow mode: Multiple large messages detected."
         
         return False, ""
     except Exception:
@@ -562,7 +562,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
         in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
         if in_slow_mode:
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"?? You are in slow mode. Please wait {remaining_time} more seconds.", []
+            return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
         
         # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
         should_slow, slow_msg = _should_apply_individual_slow_mode(username)
@@ -590,7 +590,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             # Apply sanction for oversized message
             sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"? Message too long (max {max_length} characters). {sanction_msg}", []
+            return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
         
         # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
         if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
@@ -598,7 +598,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             if is_duplicate:
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"? Duplicate or very similar message detected. {sanction_msg}", []
+                return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
         
         # 5. PAYLOAD SIZE MONITORING
         if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
@@ -608,7 +608,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             if original_size > max_payload:
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"? Message payload too large. {sanction_msg}", []
+                return False, f"❌ Message payload too large. {sanction_msg}", []
         
         # 6. CONTENT PATTERN ANALYSIS
         if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
@@ -623,7 +623,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
                 if total_pattern_violations >= 3:
                     sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
                     antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                    return False, f"? Suspicious content patterns detected. {sanction_msg}", []
+                    return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
         
         # Store message in history for future duplicate detection
         user_data['message_history'].append(text)
@@ -682,7 +682,7 @@ function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorA
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
-  const isHeader = (t) => /(ONLINE|OFFLINE)\s*�/i.test(t);
+  const isHeader = (t) => /(ONLINE|OFFLINE)\s*—/i.test(t);
   const wipe = (node) => { if(node) node.textContent=''; };
   ['.status','.user-status','.presence','.presence-text','.status-text'].forEach(function(q){ root.querySelectorAll(q).forEach(wipe); });
   root.querySelectorAll('span,small,div,p').forEach(function(el){
@@ -705,7 +705,7 @@ function observeStatuses(){
 async function tick(){ try{ const r=await fetch('/api/admins/online',{credentials:'same-origin'}); const j=await r.json(); if(r.ok&&j&&j.ok){ const list=j.admins||[]; render(list); mirror(list); cleanStatuses(); } }catch(e){} }
 function ensureAdminDropdown(){ if(document.getElementById('admin-dropdown')) return; const b=document.createElement('div'); b.id='admin-dropdown'; b.style.position='fixed'; b.style.top='12px'; b.style.right='12px'; b.style.zIndex='9999'; b.innerHTML = '\
 <div style="position:relative">\
-  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ?</button>\
+  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ▾</button>\
   <div id="admMenu" style="position:absolute;right:0;margin-top:6px;background:#0b1020;border:1px solid #374151;border-radius:8px;display:none;min-width:180px;box-shadow:0 10px 20px rgba(0,0,0,0.4)">\
     <a href="/admin/create_user" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">Create User</a>\
     <a href="/admin/dbsafe" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">DB Safe</a>\
@@ -1307,7 +1307,7 @@ def admin_dbsafe():
         vcol = (request.args.get('val_col') or 'value').strip()
     html = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>DB Safe � {tbl}</title>",
+        f"<title>DB Safe – {tbl}</title>",
         "<style>body{font-family:system-ui,Segoe UI,Arial;margin:0;background:#0f172a;color:#e5e7eb}",
         ".wrap{max-width:900px;margin:24px auto;padding:0 12px}",
         ".card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px}",
@@ -1318,7 +1318,7 @@ def admin_dbsafe():
         "a{color:#93c5fd}",
         "</style></head><body>",
         "<div class='wrap'><div class='card'>",
-        f"<h3 style='margin:0 0 12px'>DB Safe � {tbl}</h3>",
+        f"<h3 style='margin:0 0 12px'>DB Safe – {tbl}</h3>",
         "<div class='muted'>Edit values and click Save All. Adds new rows if key is new.</div>",
         "<div id='rows'>",
     ]
@@ -3011,7 +3011,7 @@ def api_smite():
                     ".muted{color:#9ca3af}.code{font-size:20px;letter-spacing:2px;background:#0b1020;border:1px solid #374151;padding:10px;border-radius:8px;display:flex;gap:8px;align-items:center;justify-content:space-between}"
                     ".btn{padding:8px 10px;border-radius:8px;border:1px solid #374151;background:#2563eb;color:#fff}</style></head><body>"
                     "<div class='card'><h3 style='margin-top:0'>Current downtime code</h3>"
-                    "<div class='code'><span>����������������</span> "
+                    "<div class='code'><span>••••••••••••••••</span> "
                     f"<button class='btn' onclick=\"navigator.clipboard.writeText('{code_once}')\">Copy</button></div>"
                     "<div class='muted' style='margin-top:8px'>Code rotates after each successful unlock.</div>"
                     "</div></body></html>"
@@ -8041,7 +8041,7 @@ def on_send_message(data):
             if isinstance(info, dict):
                 priv = info.get('private') or ''
                 pub = info.get('public') or ''
-                emit("system_message", store_system_message(f"IPs of {target} � private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
+                emit("system_message", store_system_message(f"IPs of {target} — private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
             else:
                 ip = info or ''
                 if ip:
@@ -8770,173 +8770,6 @@ def on_report_user(data):
     except Exception as e:
         emit("report_error", {"message": "Failed to submit report"})
 
-# Admin Report Management Handlers
-@socketio.on("fetch_reports")
-def on_fetch_reports(data):
-    """Fetch all reports for admin review"""
-    username = session.get("username")
-    if not username:
-        emit("reports_error", {"message": "Authentication required"})
-        return
-    
-    if not is_admin():
-        emit("reports_error", {"message": "Admin access required"})
-        return
-    
-    try:
-        db = get_db()
-        cur = db.cursor()
-        
-        # Get filter parameters
-        status_filter = data.get("status", "all")
-        offset = data.get("offset", 0)
-        limit = min(data.get("limit", 50), 100)  # Max 100 reports at once
-        
-        # Build query based on status filter
-        if status_filter == "all":
-            cur.execute("""
-                SELECT id, report_type, target_id, target_username, reason, details,
-                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
-                FROM reports
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset))
-        else:
-            cur.execute("""
-                SELECT id, report_type, target_id, target_username, reason, details,
-                       reporter_username, created_at, status, admin_notes, resolved_at, resolved_by
-                FROM reports
-                WHERE status = ?
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """, (status_filter, limit, offset))
-        
-        reports = cur.fetchall()
-        
-        # Convert to list of dictionaries
-        reports_list = []
-        for report in reports:
-            reports_list.append({
-                "id": report[0],
-                "report_type": report[1],
-                "target_id": report[2],
-                "target_username": report[3],
-                "reason": report[4],
-                "details": report[5],
-                "reporter_username": report[6],
-                "created_at": report[7],
-                "status": report[8],
-                "admin_notes": report[9],
-                "resolved_at": report[10],
-                "resolved_by": report[11]
-            })
-        
-        # Get total count
-        if status_filter == "all":
-            cur.execute("SELECT COUNT(*) FROM reports")
-        else:
-            cur.execute("SELECT COUNT(*) FROM reports WHERE status = ?", (status_filter,))
-        total_count = cur.fetchone()[0]
-        
-        emit("reports_data", {
-            "reports": reports_list,
-            "total": total_count,
-            "offset": offset,
-            "limit": limit
-        })
-        
-    except Exception as e:
-        emit("reports_error", {"message": "Failed to fetch reports"})
-
-@socketio.on("update_report_status")
-def on_update_report_status(data):
-    """Update report status (resolve, dismiss, etc.)"""
-    username = session.get("username")
-    if not username:
-        emit("report_update_error", {"message": "Authentication required"})
-        return
-    
-    if not is_admin():
-        emit("report_update_error", {"message": "Admin access required"})
-        return
-    
-    try:
-        report_id = data.get("report_id")
-        new_status = data.get("status")
-        admin_notes = data.get("admin_notes", "")
-        
-        if not report_id or not new_status:
-            emit("report_update_error", {"message": "Missing required fields"})
-            return
-        
-        # Validate status
-        valid_statuses = ["pending", "reviewed", "resolved", "dismissed"]
-        if new_status not in valid_statuses:
-            emit("report_update_error", {"message": "Invalid status"})
-            return
-        
-        db = get_db()
-        cur = db.cursor()
-        
-        # Update report
-        if new_status in ["resolved", "dismissed"]:
-            cur.execute("""
-                UPDATE reports 
-                SET status = ?, admin_notes = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
-                WHERE id = ?
-            """, (new_status, admin_notes, username, report_id))
-        else:
-            cur.execute("""
-                UPDATE reports 
-                SET status = ?, admin_notes = ?
-                WHERE id = ?
-            """, (new_status, admin_notes, report_id))
-        
-        if cur.rowcount == 0:
-            emit("report_update_error", {"message": "Report not found"})
-            return
-        
-        db.commit()
-        emit("report_update_success", {"message": "Report updated successfully"})
-        
-    except Exception as e:
-        emit("report_update_error", {"message": "Failed to update report"})
-
-@socketio.on("delete_report")
-def on_delete_report(data):
-    """Delete a report (admin only)"""
-    username = session.get("username")
-    if not username:
-        emit("report_delete_error", {"message": "Authentication required"})
-        return
-    
-    if not is_admin():
-        emit("report_delete_error", {"message": "Admin access required"})
-        return
-    
-    try:
-        report_id = data.get("report_id")
-        
-        if not report_id:
-            emit("report_delete_error", {"message": "Report ID required"})
-            return
-        
-        db = get_db()
-        cur = db.cursor()
-        
-        # Delete report
-        cur.execute("DELETE FROM reports WHERE id = ?", (report_id,))
-        
-        if cur.rowcount == 0:
-            emit("report_delete_error", {"message": "Report not found"})
-            return
-        
-        db.commit()
-        emit("report_delete_success", {"message": "Report deleted successfully"})
-        
-    except Exception as e:
-        emit("report_delete_error", {"message": "Failed to delete report"})
-
 
 # HTML Templates (unchanged)
 BASE_CSS = """
@@ -9267,7 +9100,7 @@ LOGIN_HTML = """
 <html data-default-language="{{ my_language }}" lang="{{ my_language }}">
 <head>
     <meta charset="utf-8">
-    <title>Chatter � Login</title>
+    <title>Chatter — Login</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9300,7 +9133,7 @@ REGISTER_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Chatter � Register</title>
+    <title>Chatter — Register</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9374,7 +9207,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:6px;align-items:center">
                     <button id="goPublicBtn" type="button" style="padding:4px 8px;font-size:12px;background:#374151"># Public</button>
                     <div style="position:relative;display:inline-block">
-                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ?</button>
+                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ▾</button>
                       <div id="newMenu" style="display:none;position:absolute;right:0;top:100%;background:#0b1020;border:1px solid #374151;border-radius:8px;min-width:180px;z-index:50">
                         <a href="#" id="optNewDM" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Direct Message</a>
                         <a href="#" id="optNewGroup" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Group Chat</a>
@@ -9394,7 +9227,7 @@ CHAT_HTML = """
         <header>
             <h1>
                 <span style="font-size:22px;font-weight:700">Chatter</span>
-                <small>� chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
+                <small>— chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
             </h1>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;">
                 <div class="note">
@@ -9407,11 +9240,11 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
                     {% if username not in superadmins %}
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
                     {% endif %}
                     <a href="/logout" style="color:var(--muted);text-decoration:underline">Log out</a>
                 </div>
@@ -9430,7 +9263,7 @@ CHAT_HTML = """
                         <strong>Replying to <span id="replyUser"></span></strong>
                         <div id="replySnippet" style="color:var(--muted);margin-top:4px;max-width:660px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
                     </div>
-                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">?</button>
+                    <button id="cancelReplyBtn" type="button" class="btn btn-outline">✕</button>
                 </div>
             </div>
             <form id="sendForm" enctype="multipart/form-data">
@@ -9446,8 +9279,8 @@ CHAT_HTML = """
     <div id="pinsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:10005;">
       <div style="position:relative;max-width:680px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
-          <strong>?? Pinned Messages</strong>
-          <button id="closePinsOverlay" type="button" style="padding:6px 10px">?</button>
+          <strong>📌 Pinned Messages</strong>
+          <button id="closePinsOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
       </div>
@@ -9458,10 +9291,7 @@ CHAT_HTML = """
       <div id="adminBox" style="position:relative;max-width:720px;margin:50px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
           <strong>Admin Dashboard</strong>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button id="adminReportsBtn" type="button" style="background:#dc2626;color:#fff;padding:6px 12px;border:none;border-radius:6px;cursor:pointer;font-weight:bold">📋 Reports</button>
-            <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
-          </div>
+          <button id="closeAdminOverlay" type="button" style="padding:6px 10px">✕</button>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:16px;color:var(--primary)">
           <div id="idResetDropdown" style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card); display:none">
@@ -9484,7 +9314,7 @@ CHAT_HTML = """
               <button id="adminDmCloseAllBtn" type="button" class="btn btn-secondary">Close All My DMs</button>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <input id="adminDmTo" placeholder="send as System ? username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
+              <input id="adminDmTo" placeholder="send as System → username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
               <textarea id="adminDmText" rows="2" placeholder="message text" style="flex:2;min-width:260px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)"></textarea>
               <button id="adminDmSendBtn" type="button" class="btn btn-primary">Send DM as System</button>
             </div>
@@ -9578,7 +9408,7 @@ CHAT_HTML = """
       <div id="chatDialogBox" style="background:var(--card);border:1px solid var(--border);border-radius:12px;max-width:520px;width:92%;box-shadow:0 10px 40px rgba(0,0,0,0.3);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;color:var(--primary)">
           <strong id="chatDialogTitle">Dialog</strong>
-          <button id="chatDialogClose" class="btn btn-outline" type="button">?</button>
+          <button id="chatDialogClose" class="btn btn-outline" type="button">✕</button>
         </div>
         <form id="chatDialogForm" style="padding:14px;display:flex;flex-direction:column;gap:10px"></form>
         <div style="padding:12px 14px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
@@ -9598,7 +9428,7 @@ CHAT_HTML = """
             {% if username in superadmins %}
             <button id="btnAdminDashSettings" type="button" title="Admin Dashboard" class="btn btn-secondary">Admin Dashboard</button>
             {% endif %}
-            <button id="closeSettings" type="button" class="btn btn-outline">?</button>
+            <button id="closeSettings" type="button" class="btn btn-outline">✕</button>
           </div>
         </div>
         <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
@@ -9658,8 +9488,8 @@ CHAT_HTML = """
               <div class="note">Bio shows on hover and in DM header. Status affects your presence color.</div>
               <hr style="margin:10px 0;border:none;border-top:1px dashed #ccc">
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button id="markAllReadBtn" type="button" class="btn btn-primary">? Mark All As Read</button>
-                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">?? Clear All Messages</button>
+                <button id="markAllReadBtn" type="button" class="btn btn-primary">✓ Mark All As Read</button>
+                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">🧹 Clear All Messages</button>
               </div>
             </div>
           </div>
@@ -9683,30 +9513,6 @@ CHAT_HTML = """
         </div>
       </div>
     </div>
-    <!-- Reports Management Modal -->
-    <div id="reportsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;overflow:auto;">
-      <div id="reportsBox" style="position:relative;max-width:900px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);max-height:85vh;overflow:hidden;">
-        <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-          <span>📋 Reports Management</span>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button id="refreshReports" type="button" class="btn btn-primary">🔄 Refresh</button>
-            <button id="closeReports" type="button" class="btn btn-outline">✕</button>
-          </div>
-        </div>
-        <div id="reportsContent" style="padding:16px;overflow-y:auto;max-height:calc(85vh - 80px);color:var(--primary);">
-          <div id="reportsLoading" style="text-align:center;padding:40px;color:var(--muted);">
-            <div style="font-size:24px;margin-bottom:8px;">⏳</div>
-            <div>Loading reports...</div>
-          </div>
-          <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
-            <div style="font-size:24px;margin-bottom:8px;">📭</div>
-            <div>No reports found</div>
-          </div>
-          <div id="reportsList" style="display:none;"></div>
-        </div>
-      </div>
-    </div>
-
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
@@ -9906,7 +9712,7 @@ CHAT_HTML = """
             row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.marginTop = '6px';
             const hint = document.createElement('div');
             hint.style.color = '#9ca3af'; hint.style.fontSize = '12px';
-            hint.textContent = 'escape to cancel � enter to save � shift+enter for newline';
+            hint.textContent = 'escape to cancel • enter to save • shift+enter for newline';
             const saveBtn = document.createElement('button');
             saveBtn.type = 'button'; saveBtn.className = 'btn btn-primary'; saveBtn.textContent = 'Save';
             row.appendChild(hint); row.appendChild(saveBtn);
@@ -10163,7 +9969,7 @@ CHAT_HTML = """
             });
             // Voice channels
             const v = Array.isArray(voiceChannelsCache)? voiceChannelsCache: [];
-            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">?? ${c}</a></div>`); });
+            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">🔊 ${c}</a></div>`); });
             gdmListEl.innerHTML = list.length ? list.join('') : '<div style="color:#999">No channels</div>';
             // Wire clicks
             gdmListEl.querySelectorAll('a[data-gdm]').forEach(a=>{ a.onclick=(e)=>{ e.preventDefault(); const tid=parseInt(a.getAttribute('data-gdm'),10); if(!isNaN(tid)) openGDM(tid); if (isMobile()) closeOverlays(); }; });
@@ -10538,7 +10344,7 @@ CHAT_HTML = """
           
           // Add close button to pinned message
           const closeBtn = document.createElement("button");
-          closeBtn.innerHTML = "?";
+          closeBtn.innerHTML = "✕";
           closeBtn.style.cssText = "position:absolute;top:4px;right:6px;background:none;border:none;color:#f59e0b;font-size:16px;cursor:pointer;padding:2px 4px;border-radius:3px";
           closeBtn.title = "Close pinned message";
           closeBtn.onclick = (e) => {
@@ -10566,7 +10372,7 @@ CHAT_HTML = """
           
           pinnedMessageEl.innerHTML = `
             <div style='display:flex;align-items:flex-start;gap:10px'>
-              <div style='font-size:20px'>??</div>
+              <div style='font-size:20px'>📌</div>
               <div style='flex:1;min-width:0'>
                 <div style='display:flex;align-items:center;gap:8px;margin-bottom:4px'>
                   <img src='${mAva}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
@@ -10653,7 +10459,7 @@ CHAT_HTML = """
             try {
                 // Only show if not currently in this DM
                 if (info && info.from && info.to && ((currentMode !== 'dm') || currentPeer !== info.from)) {
-                    globalTypingBar.textContent = `${info.from} is typing in your DM�`;
+                    globalTypingBar.textContent = `${info.from} is typing in your DM…`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('your DM')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10663,7 +10469,7 @@ CHAT_HTML = """
             try {
                 if (info && info.thread_id && ((currentMode !== 'gdm') || currentThreadId !== info.thread_id)) {
                     const name = (gdmThreadsCache[info.thread_id] && gdmThreadsCache[info.thread_id].name) || `Group ${info.thread_id}`;
-                    globalTypingBar.textContent = `${info.from} is typing in ${name}�`;
+                    globalTypingBar.textContent = `${info.from} is typing in ${name}…`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('is typing in')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10672,9 +10478,9 @@ CHAT_HTML = """
 
         function formatTyping(users) {
             if (!users || users.length === 0) return '';
-            if (users.length === 1) return users[0] + ' is typing�';
-            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing�';
-            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing�';
+            if (users.length === 1) return users[0] + ' is typing…';
+            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing…';
+            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing…';
         }
 
         // Load existing messages immediately when connected
@@ -10964,9 +10770,9 @@ CHAT_HTML = """
                     </div>`;
                 }).join('');
                 rightOnlineList.innerHTML = `
-                  <div style='font-weight:700;margin:6px 0'>Online � ${online.length}</div>
+                  <div style='font-weight:700;margin:6px 0'>Online — ${online.length}</div>
                   ${online.map(renderUser).join('') || "<div class='note'>No one online</div>"}
-                  <div style='font-weight:700;margin:10px 0 6px'>Offline � ${offline.length}</div>
+                  <div style='font-weight:700;margin:10px 0 6px'>Offline — ${offline.length}</div>
                   ${offline.map(renderUser).join('') || "<div class='note'>No one offline</div>"}
                 `;
 
@@ -11126,7 +10932,7 @@ CHAT_HTML = """
                 } catch(e) {}
             }));
             if (user !== me) {
-                menu.appendChild(makeItem('?? Report User', () => {
+                menu.appendChild(makeItem('🚨 Report User', () => {
                     showReportModal('user', {
                         target_username: user
                     });
@@ -11240,9 +11046,9 @@ CHAT_HTML = """
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
                   </span>
-                  � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                  — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             } catch(e) {
-                modeBar.innerHTML = `DM with ${peer} � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                modeBar.innerHTML = `DM with ${peer} — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             }
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
@@ -11288,7 +11094,7 @@ CHAT_HTML = """
             // Close is per-user local hide
             buttons += `
                 <button id='btnGdmClose' type='button' class='btn btn-secondary'>Close</button>`;
-            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} � ${buttons}`;
+            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} — ${buttons}`;
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
             // reset unread for this group
@@ -11527,7 +11333,7 @@ CHAT_HTML = """
                         );
                     }
                     if (canEdit) {
-                        contextMenu.appendChild(makeItem('? Edit message', () => {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('edit_message', { id: m.id, text: txt }); });
@@ -11535,18 +11341,18 @@ CHAT_HTML = """
                     }
 
                     // Reply
-                    contextMenu.appendChild(makeItem('? Reply', () => {
+                    contextMenu.appendChild(makeItem('↩ Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
                     // Delete item
-                    contextMenu.appendChild(makeItem('??? Delete message', () => {
+                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
                     // DM Sender
                     if (m.username && m.username !== me) {
-                        contextMenu.appendChild(makeItem('?? DM', () => { openDM(m.username); }));
+                        contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
                         // Report Message
-                        contextMenu.appendChild(makeItem('?? Report Message', () => {
+                        contextMenu.appendChild(makeItem('🚨 Report Message', () => {
                             showReportModal('message', {
                                 message_id: m.id,
                                 target_username: m.username
@@ -11633,14 +11439,14 @@ CHAT_HTML = """
                         return item;
                     };
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('? Edit DM', () => {
+                        contextMenu.appendChild(makeItem('✏ Edit DM', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                         }));
                     }
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('??? Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                        contextMenu.appendChild(makeItem('🗑️ Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
@@ -11713,14 +11519,14 @@ CHAT_HTML = """
                         return item;
                     };
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('? Edit message', () => {
+                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                         }));
                     }
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('??? Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                        contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
@@ -11767,7 +11573,7 @@ CHAT_HTML = """
                 const secs = Math.max(0, Math.floor(timeoutUntil - Date.now()/1000));
                 const msg = `You are timed out for ${secs} more seconds`;
                 const cur = modeBarNote.textContent || '';
-                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' � ' : '') + msg; }
+                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' — ' : '') + msg; }
             }catch(e){}
 
         // Group lock status UX: banner + disable inputs if locked
@@ -12091,7 +11897,7 @@ CHAT_HTML = """
                 const isLatest = idx === 0;
                 return `
                   <div style='border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px;background:${isLatest ? '#fffbe6' : '#fff'}'>
-                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">?? Latest Pin</div>' : ''}
+                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">📌 Latest Pin</div>' : ''}
                     <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>
                       <img src='${mAva}' alt='' style='width:24px;height:24px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
                       <span style='font-weight:700'>${esc(msg.username)}</span>
@@ -12771,7 +12577,7 @@ CHAT_HTML = """
                   if (tip) return;
                   tip = document.createElement('div');
                   tip.className = 'popover';
-                  tip.textContent = 'DANGER � MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
+                  tip.textContent = 'DANGER — MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
                   tip.style.position = 'fixed';
                   tip.style.left = (e.clientX + 10) + 'px';
                   tip.style.top = (e.clientY + 10) + 'px';
@@ -12924,235 +12730,6 @@ CHAT_HTML = """
                 }
               } catch(e){}
             })();
-            // Reports Management Functions
-            function openReportsModal() {
-              try {
-                // Close admin dashboard
-                document.getElementById('adminOverlay').style.display = 'none';
-                // Show reports modal
-                document.getElementById('reportsOverlay').style.display = 'block';
-                loadReports();
-              } catch(e) {
-                console.error('Error opening reports modal:', e);
-              }
-            }
-
-            function closeReportsModal() {
-              try {
-                document.getElementById('reportsOverlay').style.display = 'none';
-              } catch(e) {
-                console.error('Error closing reports modal:', e);
-              }
-            }
-
-            function loadReports(status = 'all', offset = 0, limit = 50) {
-              try {
-                // Show loading state
-                document.getElementById('reportsLoading').style.display = 'block';
-                document.getElementById('reportsEmpty').style.display = 'none';
-                document.getElementById('reportsList').style.display = 'none';
-                
-                // Emit fetch request
-                socket.emit('fetch_reports', {
-                  status: status,
-                  offset: offset,
-                  limit: limit
-                });
-              } catch(e) {
-                console.error('Error loading reports:', e);
-              }
-            }
-
-            function renderReports(data) {
-              try {
-                const reports = data.reports || [];
-                const reportsLoading = document.getElementById('reportsLoading');
-                const reportsEmpty = document.getElementById('reportsEmpty');
-                const reportsList = document.getElementById('reportsList');
-
-                // Hide loading
-                reportsLoading.style.display = 'none';
-
-                if (reports.length === 0) {
-                  reportsEmpty.style.display = 'block';
-                  reportsList.style.display = 'none';
-                  return;
-                }
-
-                // Show reports list
-                reportsEmpty.style.display = 'none';
-                reportsList.style.display = 'block';
-                
-                // Render each report
-                reportsList.innerHTML = reports.map(report => renderReportItem(report)).join('');
-                
-                // Bind event handlers
-                bindReportHandlers();
-              } catch(e) {
-                console.error('Error rendering reports:', e);
-              }
-            }
-
-            function renderReportItem(report) {
-              const statusColors = {
-                'pending': '#f59e0b',
-                'reviewed': '#3b82f6',
-                'resolved': '#10b981',
-                'dismissed': '#6b7280'
-              };
-              
-              const statusColor = statusColors[report.status] || '#6b7280';
-              const createdDate = new Date(report.created_at).toLocaleString();
-              const resolvedInfo = report.resolved_at ? 
-                `<div style="font-size:12px;color:var(--muted);margin-top:4px">
-                  Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
-                </div>` : '';
-
-              return `
-                <div class="report-item" data-report-id="${report.id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--card);">
-                  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-                    <div>
-                      <span style="font-weight:bold;color:var(--primary);">${report.report_type.toUpperCase()}</span>
-                      <span style="background:${statusColor};color:#fff;padding:2px 8px;border-radius:12px;font-size:12px;margin-left:8px;">${report.status.toUpperCase()}</span>
-                    </div>
-                    <div style="font-size:12px;color:var(--muted);">${createdDate}</div>
-                  </div>
-                  <div style="margin-bottom:8px;">
-                    <strong>Target:</strong> ${report.target_username}
-                    <br><strong>Reporter:</strong> ${report.reporter_username}
-                    <br><strong>Reason:</strong> ${report.reason}
-                  </div>
-                  ${report.details ? `<div style="margin-bottom:8px;padding:8px;background:var(--muted);border-radius:4px;font-size:14px;">${report.details}</div>` : ''}
-                  ${report.admin_notes ? `<div style="margin-bottom:8px;"><strong>Admin Notes:</strong><br><div style="padding:8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:14px;">${report.admin_notes}</div></div>` : ''}
-                  ${resolvedInfo}
-                  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
-                    <select class="report-status-select" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;">
-                      <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
-                      <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
-                      <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
-                      <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
-                    </select>
-                    <input class="report-notes-input" type="text" placeholder="Admin notes..." value="${report.admin_notes || ''}" style="flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:4px;">
-                    <button class="update-report-btn" type="button" class="btn btn-primary" style="padding:4px 12px;background:#3b82f6;color:#fff;border:none;border-radius:4px;cursor:pointer;">Update</button>
-                    <button class="delete-report-btn" type="button" class="btn btn-danger" style="padding:4px 12px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">Delete</button>
-                  </div>
-                </div>
-              `;
-            }
-
-            function bindReportHandlers() {
-              try {
-                // Update report handlers
-                document.querySelectorAll('.update-report-btn').forEach(btn => {
-                  btn.onclick = function() {
-                    const reportItem = this.closest('.report-item');
-                    const reportId = reportItem.dataset.reportId;
-                    const status = reportItem.querySelector('.report-status-select').value;
-                    const notes = reportItem.querySelector('.report-notes-input').value;
-                    
-                    socket.emit('update_report_status', {
-                      report_id: parseInt(reportId),
-                      status: status,
-                      admin_notes: notes
-                    });
-                  };
-                });
-
-                // Delete report handlers
-                document.querySelectorAll('.delete-report-btn').forEach(btn => {
-                  btn.onclick = function() {
-                    const reportItem = this.closest('.report-item');
-                    const reportId = reportItem.dataset.reportId;
-                    
-                    if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
-                      socket.emit('delete_report', {
-                        report_id: parseInt(reportId)
-                      });
-                    }
-                  };
-                });
-              } catch(e) {
-                console.error('Error binding report handlers:', e);
-              }
-            }
-
-            // Socket.IO event listeners for reports
-            socket.on('reports_data', renderReports);
-            
-            socket.on('reports_error', function(data) {
-              try {
-                document.getElementById('reportsLoading').style.display = 'none';
-                alert('Error loading reports: ' + (data.message || 'Unknown error'));
-              } catch(e) {
-                console.error('Error handling reports_error:', e);
-              }
-            });
-
-            socket.on('report_update_success', function(data) {
-              try {
-                alert('Report updated successfully!');
-                loadReports(); // Refresh the list
-              } catch(e) {
-                console.error('Error handling report_update_success:', e);
-              }
-            });
-
-            socket.on('report_update_error', function(data) {
-              try {
-                alert('Error updating report: ' + (data.message || 'Unknown error'));
-              } catch(e) {
-                console.error('Error handling report_update_error:', e);
-              }
-            });
-
-            socket.on('report_delete_success', function(data) {
-              try {
-                alert('Report deleted successfully!');
-                loadReports(); // Refresh the list
-              } catch(e) {
-                console.error('Error handling report_delete_success:', e);
-              }
-            });
-
-            socket.on('report_delete_error', function(data) {
-              try {
-                alert('Error deleting report: ' + (data.message || 'Unknown error'));
-              } catch(e) {
-                console.error('Error handling report_delete_error:', e);
-              }
-            });
-
-            // Bind reports button click handler
-            try {
-              const reportsBtn = document.getElementById('adminReportsBtn');
-              if (reportsBtn) {
-                reportsBtn.onclick = openReportsModal;
-              }
-            } catch(e) {
-              console.error('Error binding reports button:', e);
-            }
-
-            // Bind modal close handlers
-            try {
-              const closeBtn = document.getElementById('closeReports');
-              const refreshBtn = document.getElementById('refreshReports');
-              const overlay = document.getElementById('reportsOverlay');
-              
-              if (closeBtn) closeBtn.onclick = closeReportsModal;
-              if (refreshBtn) refreshBtn.onclick = () => loadReports();
-              
-              // Click outside to close
-              if (overlay) {
-                overlay.onclick = function(e) {
-                  if (e.target === overlay) {
-                    closeReportsModal();
-                  }
-                };
-              }
-            } catch(e) {
-              console.error('Error binding modal handlers:', e);
-            }
-
 
             async function refreshAll(){
               try { const data = await adminOverview(); info = data; render(); } catch(e){}
@@ -13321,7 +12898,7 @@ CHAT_HTML = """
                   if (!r.ok){ out.textContent = j.error||'Failed'; return; }
                   const items = j.items||[];
                   out.innerHTML = items.map(m=>`<div style='border-bottom:1px dashed #e5e7eb;padding:4px 0'>
-                    <div style='font-size:12px;color:#6b7280'>#${m.id} � ${m.username} � ${m.created_at}</div>
+                    <div style='font-size:12px;color:#6b7280'>#${m.id} — ${m.username} — ${m.created_at}</div>
                     <div>${m.text}</div>
                   </div>`).join('') || '<span style="color:#666">None</span>';
                 }catch(e){ const out = box.querySelector('#mtHistOut'); if (out) out.textContent = 'Failed'; }
@@ -13964,7 +13541,7 @@ async function searchUsers(query) {
                          alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
                     <div style="flex:1;">
                         <div style="font-weight:bold;color:var(--primary);">@${user.username}</div>
-                        <div style="font-size:12px;color:var(--muted);">${user.status || 'offline'} � ${user.bio || 'No bio'}</div>
+                        <div style="font-size:12px;color:var(--muted);">${user.status || 'offline'} • ${user.bio || 'No bio'}</div>
                     </div>
                     <div style="width:8px;height:8px;border-radius:50%;background:${getStatusColor(user.status)};"></div>
                 </div>
@@ -14021,11 +13598,11 @@ function closeUserSearchModal() {
 
 // Socket.IO event listeners for reporting
 socket.on('report_success', (data) => {
-    showToast('? Report submitted successfully', 'success');
+    showToast('✅ Report submitted successfully', 'success');
 });
 
 socket.on('report_error', (data) => {
-    showToast('? ' + data.message, 'error');
+    showToast('❌ ' + data.message, 'error');
 });
 
 // Toast notification system

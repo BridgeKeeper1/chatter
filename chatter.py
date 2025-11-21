@@ -9101,6 +9101,24 @@ small {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.filter-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.report-item:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    transform: translateY(-1px);
+}
+
+.reason-header:hover {
+    background: rgba(59, 130, 246, 0.1) !important;
+}
 
 .username {
     font-weight: 700;
@@ -9485,6 +9503,13 @@ CHAT_HTML = """
             </div>
           </div>
           <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)">
+            <div style="font-weight:700;margin-bottom:8px">Reports Management</div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <button id="adminReportsBtn" type="button" class="btn btn-danger" style="padding:8px 16px;font-size:13px;">📋 Open Reports Panel</button>
+              <span class="note" style="color:#6b7280;font-size:12px;">Manage user reports and moderation actions</span>
+            </div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)">
             <div style="font-weight:700;margin-bottom:8px">Group Controls</div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <input id="adminGdmTid" placeholder="thread id (tid)" style="width:200px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
@@ -9679,27 +9704,46 @@ CHAT_HTML = """
         </div>
       </div>
     </div>
-    <!-- Reports Management Panel -->
-    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-        <span>&#128203; Reports Management</span>
+    <!-- Enhanced Reports Management Panel -->
+    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:600px;cursor:move;max-height:85vh;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 15px 40px rgba(0,0,0,0.25);z-index:9999;overflow:hidden;">
+      <!-- Header -->
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg, var(--card) 0%, rgba(59, 130, 246, 0.05) 100%);color:var(--primary);">
+        <span style="font-size:16px;">📋 Reports Management</span>
         <div style="display:flex;gap:8px;align-items:center">
-          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">&#128260; Refresh</button>
-          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">&#10005;</button>
+          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:6px 12px;font-size:12px;border-radius:6px;">🔄 Refresh</button>
+          <button id="closeReports" type="button" class="btn btn-outline" style="padding:6px 10px;font-size:12px;border-radius:6px;">✕</button>
         </div>
       </div>
-      <div id="reportsContent" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
-        <div id="reportsLoading" style="text-align:center;padding:30px;color:var(--muted);">
-          <div style="font-size:20px;margin-bottom:8px;">?</div>
-          <div>Loading reports...</div>
+      
+      <!-- Filter Bar -->
+      <div id="reportsFilterBar" style="padding:12px 20px;border-bottom:1px solid var(--border);background:rgba(249, 250, 251, 0.5);">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <span style="font-weight:600;color:var(--primary);font-size:13px;">Filter by Status:</span>
+          <button class="filter-btn active" data-status="all" style="padding:4px 12px;border:1px solid #e5e7eb;border-radius:20px;background:#3b82f6;color:#fff;font-size:11px;cursor:pointer;transition:all 0.2s;">All</button>
+          <button class="filter-btn" data-status="pending" style="padding:4px 12px;border:1px solid #f59e0b;border-radius:20px;background:#fff;color:#f59e0b;font-size:11px;cursor:pointer;transition:all 0.2s;">Pending</button>
+          <button class="filter-btn" data-status="reviewed" style="padding:4px 12px;border:1px solid #3b82f6;border-radius:20px;background:#fff;color:#3b82f6;font-size:11px;cursor:pointer;transition:all 0.2s;">Reviewed</button>
+          <button class="filter-btn" data-status="resolved" style="padding:4px 12px;border:1px solid #10b981;border-radius:20px;background:#fff;color:#10b981;font-size:11px;cursor:pointer;transition:all 0.2s;">Resolved</button>
+          <button class="filter-btn" data-status="dismissed" style="padding:4px 12px;border:1px solid #6b7280;border-radius:20px;background:#fff;color:#6b7280;font-size:11px;cursor:pointer;transition:all 0.2s;">Dismissed</button>
         </div>
-        <div id="reportsEmpty" style="display:none;text-align:center;padding:30px;color:var(--muted);">
-          <div style="font-size:20px;margin-bottom:8px;">??</div>
-          <div>No reports found</div>
+        <div style="font-size:11px;color:var(--muted);">
+          <span id="reportsCount">0 reports</span> • <span id="filteredCount">0 showing</span>
         </div>
-        <div id="reportsList" style="display:none;"></div>
+      </div>
+      
+      <!-- Content Area -->
+      <div id="reportsContent" style="padding:0;overflow-y:auto;max-height:calc(85vh - 140px);color:var(--primary);">
+        <div id="reportsLoading" style="text-align:center;padding:40px;color:var(--muted);">
+          <div style="font-size:24px;margin-bottom:12px;animation:spin 1s linear infinite;">⏳</div>
+          <div style="font-size:14px;">Loading reports...</div>
+        </div>
+        <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
+          <div style="font-size:24px;margin-bottom:12px;">📭</div>
+          <div style="font-size:14px;">No reports found</div>
+        </div>
+        <div id="reportsList" style="display:none;padding:16px 20px;"></div>
       </div>
     </div>
+
 
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -10383,6 +10427,8 @@ CHAT_HTML = """
           try { document.getElementById('adminDmCloseAllBtn').onclick = ()=> post('/api/admin/dm_close_all',{}); } catch(e){}
           // DM as System
           try { document.getElementById('adminDmSendBtn').onclick = ()=>{ const to=(document.getElementById('adminDmTo').value||'').trim(); const text=(document.getElementById('adminDmText').value||'').trim(); if(!to||!text){ say('Enter recipient and text','#dc2626'); return;} post('/api/admin/dm_as_system',{to, text}); }; } catch(e){}
+          // Admin Reports Panel
+          try { document.getElementById("adminReportsBtn").onclick = openReportsPanel; } catch(e){}
           // Group controls
           const tidVal = ()=>{ const v=(document.getElementById('adminGdmTid').value||'').trim(); const n=parseInt(v,10); return isNaN(n)?0:n; };
           try { document.getElementById('adminGdmLockBtn').onclick = ()=>{ const tid=tidVal(); if(!tid){ say('Enter tid','#dc2626'); return;} post('/api/gdm/lock',{tid, thread_id: tid}); }; } catch(e){}
@@ -13878,16 +13924,93 @@ function showToast(message, type = 'info') {
           }
         }
 
-        function loadReports(status = 'all', offset = 0, limit = 50) {
+        // Enhanced Reports Management Functions
+        let allReports = [];
+        let currentFilter = 'all';
+
+        function toggleReasonDropdown(reportId) {
+          const content = document.getElementById(`content-${reportId}`);
+          const arrow = document.getElementById(`arrow-${reportId}`);
+          
+          if (content.style.display === 'none') {
+            content.style.display = 'block';
+            arrow.style.transform = 'rotate(180deg)';
+          } else {
+            content.style.display = 'none';
+            arrow.style.transform = 'rotate(0deg)';
+          }
+        }
+
+        function initializeFilterButtons() {
+          document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+              // Remove active class from all buttons
+              document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.remove('active');
+                const status = b.dataset.status;
+                const colors = {
+                  'all': '#3b82f6',
+                  'pending': '#f59e0b',
+                  'reviewed': '#3b82f6',
+                  'resolved': '#10b981',
+                  'dismissed': '#6b7280'
+                };
+                b.style.background = '#fff';
+                b.style.color = colors[status] || '#6b7280';
+              });
+              
+              // Add active class to clicked button
+              this.classList.add('active');
+              const status = this.dataset.status;
+              const colors = {
+                'all': '#3b82f6',
+                'pending': '#f59e0b',
+                'reviewed': '#3b82f6',
+                'resolved': '#10b981',
+                'dismissed': '#6b7280'
+              };
+              this.style.background = colors[status] || '#6b7280';
+              this.style.color = '#fff';
+              
+              currentFilter = status;
+              filterReports();
+            });
+          });
+        }
+
+        function filterReports() {
+          const reportItems = document.querySelectorAll('.report-item');
+          let visibleCount = 0;
+          
+          reportItems.forEach(item => {
+            const status = item.dataset.status;
+            const shouldShow = currentFilter === 'all' || status === currentFilter;
+            
+            if (shouldShow) {
+              item.style.display = 'block';
+              visibleCount++;
+            } else {
+              item.style.display = 'none';
+            }
+          });
+          
+          // Update counts
+          document.getElementById('filteredCount').textContent = `${visibleCount} showing`;
+        }
+
+        function updateReportsCounts(total) {
+          document.getElementById('reportsCount').textContent = `${total} reports`;
+          filterReports(); // This will update the filtered count
+        }
+
+        function loadReports(status = 'all', offset = 0, limit = 100) {
           try {
-            // Show loading state
             document.getElementById('reportsLoading').style.display = 'block';
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
             
-            // Emit fetch request
-            socket.emit('fetch_reports', {
-              status: status,
+            socket.emit('load_reports', {
+              status: status === 'all' ? null : status,
               offset: offset,
               limit: limit
             });
@@ -13899,6 +14022,7 @@ function showToast(message, type = 'info') {
         function renderReports(data) {
           try {
             const reports = data.reports || [];
+            allReports = reports; // Store for filtering
             const reportsLoading = document.getElementById('reportsLoading');
             const reportsEmpty = document.getElementById('reportsEmpty');
             const reportsList = document.getElementById('reportsList');
@@ -13909,6 +14033,7 @@ function showToast(message, type = 'info') {
             if (reports.length === 0) {
               reportsEmpty.style.display = 'block';
               reportsList.style.display = 'none';
+              updateReportsCounts(0);
               return;
             }
 
@@ -13919,8 +14044,17 @@ function showToast(message, type = 'info') {
             // Render each report
             reportsList.innerHTML = reports.map(report => renderReportItem(report)).join('');
             
+            // Update counts
+            updateReportsCounts(reports.length);
+            
             // Bind event handlers
             bindReportHandlers();
+            
+            // Initialize filter buttons if not already done
+            if (!document.querySelector('.filter-btn.initialized')) {
+              initializeFilterButtons();
+              document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.add('initialized'));
+            }
           } catch(e) {
             console.error('Error rendering reports:', e);
           }
@@ -13937,79 +14071,68 @@ function showToast(message, type = 'info') {
           const statusColor = statusColors[report.status] || '#6b7280';
           const createdDate = new Date(report.created_at).toLocaleString();
           const resolvedInfo = report.resolved_at ? 
-            `<div style="font-size:11px;color:var(--muted);margin-top:4px">
-              Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
+            `<div style="font-size:11px;color:var(--muted);margin-top:4px;padding:6px;background:rgba(16, 185, 129, 0.1);border-radius:4px;border-left:3px solid #10b981;">
+              ✅ Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
             </div>` : '';
 
+          const reportId = `report-${report.id}`;
+          
           return `
-            <div class="report-item" data-report-id="${report.id}" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--card);font-size:12px;">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
-                <div>
-                  <span style="font-weight:bold;color:var(--primary);">${report.report_type.toUpperCase()}</span>
-                  <span style="background:${statusColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px;">${report.status.toUpperCase()}</span>
+            <div class="report-item" data-report-id="${report.id}" data-status="${report.status}" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--card);font-size:12px;box-shadow:0 2px 4px rgba(0,0,0,0.05);transition:all 0.2s ease;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-weight:bold;color:var(--primary);font-size:13px;">${report.report_type.toUpperCase()}</span>
+                  <span style="background:${statusColor};color:#fff;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;">${report.status.toUpperCase()}</span>
                 </div>
-                <div style="font-size:10px;color:var(--muted);">${createdDate}</div>
+                <div style="font-size:10px;color:var(--muted);text-align:right;">
+                  <div>ID: #${report.id}</div>
+                  <div>${createdDate}</div>
+                </div>
               </div>
-              <div style="margin-bottom:6px;font-size:11px;">
-                <strong>Target:</strong> ${report.target_username}<br>
-                <strong>Reporter:</strong> ${report.reporter_username}<br>
-                <strong>Reason:</strong> ${report.reason}
+              
+              <!-- Basic Info -->
+              <div style="margin-bottom:8px;font-size:11px;line-height:1.4;">
+                <div style="margin-bottom:4px;"><strong style="color:var(--primary);">Target:</strong> <span style="color:#dc2626;font-weight:600;">${report.target_username}</span></div>
+                <div style="margin-bottom:4px;"><strong style="color:var(--primary);">Reporter:</strong> <span style="color:#059669;">${report.reporter_username}</span></div>
               </div>
-              ${report.details ? `<div style="margin-bottom:6px;padding:6px;background:var(--muted);border-radius:3px;font-size:11px;">${report.details}</div>` : ''}
-              ${report.admin_notes ? `<div style="margin-bottom:6px;font-size:11px;"><strong>Admin Notes:</strong><br><div style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:3px;">${report.admin_notes}</div></div>` : ''}
+              
+              <!-- Collapsible User Reported Reason -->
+              <div style="margin-bottom:8px;">
+                <div class="reason-dropdown" style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card);">
+                  <div class="reason-header" onclick="toggleReasonDropdown('${reportId}')" style="padding:8px 12px;background:rgba(59, 130, 246, 0.05);cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600;color:var(--primary);transition:background 0.2s;">
+                    <span>📝 User Reported Reason</span>
+                    <span class="dropdown-arrow" id="arrow-${reportId}" style="transition:transform 0.2s;">▼</span>
+                  </div>
+                  <div class="reason-content" id="content-${reportId}" style="display:none;padding:12px;border-top:1px solid var(--border);background:rgba(249, 250, 251, 0.5);">
+                    <div style="font-size:11px;line-height:1.4;margin-bottom:8px;">
+                      <strong style="color:var(--primary);">Reason:</strong> <span style="color:#374151;">${report.reason}</span>
+                    </div>
+                    ${report.details ? `<div style="font-size:11px;line-height:1.4;padding:8px;background:#fff;border:1px solid #e5e7eb;border-radius:4px;color:#374151;"><strong>Details:</strong><br>${report.details}</div>` : ''}
+                  </div>
+                </div>
+              </div>
+              
+              ${report.admin_notes ? `<div style="margin-bottom:8px;font-size:11px;"><strong style="color:var(--primary);">Admin Notes:</strong><br><div style="padding:8px;background:rgba(59, 130, 246, 0.05);border:1px solid rgba(59, 130, 246, 0.2);border-radius:4px;color:#374151;line-height:1.4;">${report.admin_notes}</div></div>` : ''}
               ${resolvedInfo}
-              <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;">
-                <select class="report-status-select" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
+              
+              <!-- Action Controls -->
+              <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px;padding-top:8px;border-top:1px solid var(--border);">
+                <select class="report-status-select" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--card);color:var(--primary);">
                   <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
                   <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
                   <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
                   <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
                 </select>
-                <input class="report-notes-input" type="text" placeholder="Admin notes..." value="${report.admin_notes || ''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
-                <div style="display:flex;gap:4px;">
-                  <button class="update-report-btn" type="button" style="flex:1;padding:3px 8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Update</button>
-                  <button class="delete-report-btn" type="button" style="flex:1;padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Delete</button>
+                <input class="report-notes-input" type="text" placeholder="Add admin notes..." value="${report.admin_notes || ''}" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--card);color:var(--primary);">
+                <div style="display:flex;gap:6px;">
+                  <button class="update-report-btn" type="button" style="flex:1;padding:6px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.2s;">Update</button>
+                  <button class="delete-report-btn" type="button" style="flex:1;padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;transition:background 0.2s;">Delete</button>
                 </div>
               </div>
             </div>
           `;
         }
 
-        function bindReportHandlers() {
-          try {
-            // Update report handlers
-            document.querySelectorAll('.update-report-btn').forEach(btn => {
-              btn.onclick = function() {
-                const reportItem = this.closest('.report-item');
-                const reportId = reportItem.dataset.reportId;
-                const status = reportItem.querySelector('.report-status-select').value;
-                const notes = reportItem.querySelector('.report-notes-input').value;
-                
-                socket.emit('update_report_status', {
-                  report_id: parseInt(reportId),
-                  status: status,
-                  admin_notes: notes
-                });
-              };
-            });
-
-            // Delete report handlers
-            document.querySelectorAll('.delete-report-btn').forEach(btn => {
-              btn.onclick = function() {
-                const reportItem = this.closest('.report-item');
-                const reportId = reportItem.dataset.reportId;
-                
-                if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
-                  socket.emit('delete_report', {
-                    report_id: parseInt(reportId)
-                  });
-                }
-              };
-            });
-          } catch(e) {
-            console.error('Error binding report handlers:', e);
-          }
-        }
 
         // Socket.IO event listeners for reports
         socket.on('reports_data', renderReports);

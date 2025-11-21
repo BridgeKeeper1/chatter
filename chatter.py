@@ -13985,6 +13985,11 @@ function showToast(message, type = 'info') {
         function openReportsPanel() {
           try {
             // Open in solid popup mode by default
+            // Close settings overlay first (like admin dashboard)
+            try {
+              document.getElementById('settingsOverlay').style.display = 'none';
+            } catch(e) {}
+            
             document.getElementById('reportsOverlay').style.display = 'block';
             reportsMode = 'popup';
             loadReports();

@@ -13983,48 +13983,34 @@ function showToast(message, type = 'info') {
         let reportsList = [];
 
         function openReportsPanel() {
-          console.log('openReportsPanel called');
           try {
             // Close settings overlay first
-            console.log('Closing settings overlay');
             try {
               document.getElementById('settingsOverlay').style.display = 'none';
-            } catch(e) {
-              console.log('Error closing settings:', e);
-            }
+            } catch(e) {}
             
             // Open in floating mode by default
-            console.log('Opening reports panel');
-            const reportsPanel = document.getElementById('reportsPanel');
-            if (!reportsPanel) {
-              console.error('Reports panel element not found!');
-              return;
-            }
-            reportsPanel.style.display = 'block';
+            document.getElementById('reportsPanel').style.display = 'block';
             reportsMode = 'floating';
             
             // Make panel draggable
             const panel = document.getElementById("reportsPanel");
             const header = panel.querySelector("div");
-            if (header) {
-              let isDragging = false;
-              let startX, startY, initialX, initialY;
-              header.onmousedown = (e) => {
-                isDragging = true;
-                startX = e.clientX;
-                startY = e.clientY;
-                initialX = panel.offsetLeft;
-                initialY = panel.offsetTop;
-              };
-              document.onmousemove = (e) => {
-                if (!isDragging) return;
-                panel.style.left = (initialX + e.clientX - startX) + "px";
-                panel.style.top = (initialY + e.clientY - startY) + "px";
-              };
-              document.onmouseup = () => { isDragging = false; };
-            }
-            
-            console.log('Loading reports');
+            let isDragging = false;
+            let startX, startY, initialX, initialY;
+            header.onmousedown = (e) => {
+              isDragging = true;
+              startX = e.clientX;
+              startY = e.clientY;
+              initialX = panel.offsetLeft;
+              initialY = panel.offsetTop;
+            };
+            document.onmousemove = (e) => {
+              if (!isDragging) return;
+              panel.style.left = (initialX + e.clientX - startX) + "px";
+              panel.style.top = (initialY + e.clientY - startY) + "px";
+            };
+            document.onmouseup = () => { isDragging = false; };
             loadReports();
           } catch(e) {
             console.error('Error opening reports panel:', e);
@@ -14117,33 +14103,27 @@ function showToast(message, type = 'info') {
         }
 
         function loadReports(status = 'all', offset = 0, limit = 50) {
-          console.log('loadReports called with:', status, offset, limit);
           try {
             currentReportsFilter = status;
             currentReportsOffset = offset;
             
             // Show loading state
-            console.log('Setting loading state');
             document.getElementById('reportsLoading').style.display = 'block';
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
             
             // Sync loading state to floating panel
-            console.log('Syncing content');
             syncReportsContent();
             
             // Emit request to server
-            console.log('Emitting fetch_reports to server');
             socket.emit('fetch_reports', {
               status: status === 'all' ? null : status,
               offset: offset,
               limit: limit
             });
-            console.log('fetch_reports emitted successfully');
           } catch(e) {
             console.error('Error loading reports:', e);
           }
-        }
         }
 
         function renderReports(reports, total) {
@@ -14278,13 +14258,9 @@ function showToast(message, type = 'info') {
             return dateStr;
         // Bind reports button click handlers
         try {
-          console.log('Binding reports button');
           const reportsBtn = document.getElementById('btnReportsSettings');
           if (reportsBtn) {
-            console.log('Reports button found, attaching click handler');
             reportsBtn.onclick = openReportsPanel;
-          } else {
-            console.error('Reports button not found!');
           }
         } catch(e) {
           console.error('Error binding reports button:', e);

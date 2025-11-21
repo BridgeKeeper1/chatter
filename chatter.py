@@ -13984,14 +13984,33 @@ function showToast(message, type = 'info') {
 
         function openReportsPanel() {
           try {
-            // Open in solid popup mode by default
-            // Close settings overlay first (like admin dashboard)
+            // Close settings overlay first
             try {
               document.getElementById('settingsOverlay').style.display = 'none';
             } catch(e) {}
             
-            document.getElementById('reportsOverlay').style.display = 'block';
-            reportsMode = 'popup';
+            // Open in floating mode by default
+            document.getElementById('reportsPanel').style.display = 'block';
+            reportsMode = 'floating';
+            
+            // Make panel draggable
+            const panel = document.getElementById("reportsPanel");
+            const header = panel.querySelector("div");
+            let isDragging = false;
+            let startX, startY, initialX, initialY;
+            header.onmousedown = (e) => {
+              isDragging = true;
+              startX = e.clientX;
+              startY = e.clientY;
+              initialX = panel.offsetLeft;
+              initialY = panel.offsetTop;
+            };
+            document.onmousemove = (e) => {
+              if (!isDragging) return;
+              panel.style.left = (initialX + e.clientX - startX) + "px";
+              panel.style.top = (initialY + e.clientY - startY) + "px";
+            };
+            document.onmouseup = () => { isDragging = false; };
             loadReports();
           } catch(e) {
             console.error('Error opening reports panel:', e);
@@ -14053,12 +14072,30 @@ function showToast(message, type = 'info') {
 
         function syncReportsContent() {
           try {
-            const mainContent = document.getElementById('reportsList').innerHTML;
             const floatContent = document.getElementById('reportsContentFloat');
-            if (floatContent) {
-              floatContent.innerHTML = `
-                <div id="reportsListFloat" style="display:block;">${mainContent}</div>
-              `;
+            if (floatContent && reportsMode === 'floating') {
+              // Copy loading state
+              const loading = document.getElementById('reportsLoading');
+              const empty = document.getElementById('reportsEmpty');
+              const list = document.getElementById('reportsList');
+              
+              if (loading && loading.style.display !== 'none') {
+                floatContent.innerHTML = `
+                  <div style="text-align:center;padding:30px;color:var(--muted);">
+                    <div style="font-size:20px;margin-bottom:8px;">u23f3</div>
+                    <div>Loading reports...</div>
+                  </div>
+                `;
+              } else if (empty && empty.style.display !== 'none') {
+                floatContent.innerHTML = `
+                  <div style="text-align:center;padding:30px;color:var(--muted);">
+                    <div style="font-size:20px;margin-bottom:8px;">ud83dudcc4</div>
+                    <div>No reports found</div>
+                  </div>
+                `;
+              } else if (list && list.style.display !== 'none') {
+                floatContent.innerHTML = list.innerHTML;
+              }
             }
           } catch(e) {
             console.error('Error syncing reports content:', e);
@@ -14074,6 +14111,9 @@ function showToast(message, type = 'info') {
             document.getElementById('reportsLoading').style.display = 'block';
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
+            
+            // Sync loading state to floating panel
+            syncReportsContent();
             
             // Emit request to server
             socket.emit('fetch_reports', {

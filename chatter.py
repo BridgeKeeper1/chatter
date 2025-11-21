@@ -465,7 +465,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['warning_count'] += 1
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_warnings_issued'] += 1
-            return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
+            return 'warning', "?? Warning: Please avoid spamming. Continued violations may result in restrictions."
         
         elif total_violations <= 3:
             # Second/third violation - slow mode
@@ -474,7 +474,7 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['slow_mode_until'] = now + slow_duration
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
-            return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
+            return 'slow_mode', f"?? Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
         
         else:
             # Fourth+ violation - restricted state
@@ -483,10 +483,10 @@ def _apply_progressive_sanction(username, violation_type):
             user_data['slow_mode_until'] = now + restriction_duration
             user_data['last_sanction_time'] = now
             antispam_system_state['global_stats']['total_restrictions_applied'] += 1
-            return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
+            return 'restricted', f"?? Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
     
     except Exception:
-        return 'warning', "⚠️ Please avoid spamming."
+        return 'warning', "?? Please avoid spamming."
 
 def _is_user_in_slow_mode(username):
     """Check if user is currently in slow mode"""
@@ -512,7 +512,7 @@ def _should_apply_individual_slow_mode(username):
         recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
         
         if len(recent_messages) >= 10:  # 10+ messages in last minute
-            return True, "🐌 Automatic slow mode: Too many messages in a short time."
+            return True, "?? Automatic slow mode: Too many messages in a short time."
         
         # Check for rapid large messages
         recent_large = 0
@@ -521,7 +521,7 @@ def _should_apply_individual_slow_mode(username):
                 recent_large += 1
         
         if recent_large >= 3:  # 3+ large messages recently
-            return True, "🐌 Automatic slow mode: Multiple large messages detected."
+            return True, "?? Automatic slow mode: Multiple large messages detected."
         
         return False, ""
     except Exception:
@@ -562,7 +562,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
         in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
         if in_slow_mode:
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
+            return False, f"?? You are in slow mode. Please wait {remaining_time} more seconds.", []
         
         # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
         should_slow, slow_msg = _should_apply_individual_slow_mode(username)
@@ -590,7 +590,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             # Apply sanction for oversized message
             sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
             antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
+            return False, f"? Message too long (max {max_length} characters). {sanction_msg}", []
         
         # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
         if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
@@ -598,7 +598,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             if is_duplicate:
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
+                return False, f"? Duplicate or very similar message detected. {sanction_msg}", []
         
         # 5. PAYLOAD SIZE MONITORING
         if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
@@ -608,7 +608,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
             if original_size > max_payload:
                 sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
                 antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Message payload too large. {sanction_msg}", []
+                return False, f"? Message payload too large. {sanction_msg}", []
         
         # 6. CONTENT PATTERN ANALYSIS
         if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
@@ -623,7 +623,7 @@ def antispam_check_message(username, text, message_type="public", has_attachment
                 if total_pattern_violations >= 3:
                     sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
                     antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                    return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
+                    return False, f"? Suspicious content patterns detected. {sanction_msg}", []
         
         # Store message in history for future duplicate detection
         user_data['message_history'].append(text)
@@ -682,7 +682,7 @@ function mirror(list){ const host=bySel(); if(!host) return; host.querySelectorA
 function cleanStatuses(){
   const root = bySel() || document;
   const words=new Set(['ONLINE','DND','IDLE','OFFLINE','AWAY','BUSY']);
-  const isHeader = (t) => /(ONLINE|OFFLINE)\s*—/i.test(t);
+  const isHeader = (t) => /(ONLINE|OFFLINE)\s*�/i.test(t);
   const wipe = (node) => { if(node) node.textContent=''; };
   ['.status','.user-status','.presence','.presence-text','.status-text'].forEach(function(q){ root.querySelectorAll(q).forEach(wipe); });
   root.querySelectorAll('span,small,div,p').forEach(function(el){
@@ -705,7 +705,7 @@ function observeStatuses(){
 async function tick(){ try{ const r=await fetch('/api/admins/online',{credentials:'same-origin'}); const j=await r.json(); if(r.ok&&j&&j.ok){ const list=j.admins||[]; render(list); mirror(list); cleanStatuses(); } }catch(e){} }
 function ensureAdminDropdown(){ if(document.getElementById('admin-dropdown')) return; const b=document.createElement('div'); b.id='admin-dropdown'; b.style.position='fixed'; b.style.top='12px'; b.style.right='12px'; b.style.zIndex='9999'; b.innerHTML = '\
 <div style="position:relative">\
-  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ▾</button>\
+  <button id="admBtn" style="background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer">Admin ?</button>\
   <div id="admMenu" style="position:absolute;right:0;margin-top:6px;background:#0b1020;border:1px solid #374151;border-radius:8px;display:none;min-width:180px;box-shadow:0 10px 20px rgba(0,0,0,0.4)">\
     <a href="/admin/create_user" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">Create User</a>\
     <a href="/admin/dbsafe" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">DB Safe</a>\
@@ -1307,7 +1307,7 @@ def admin_dbsafe():
         vcol = (request.args.get('val_col') or 'value').strip()
     html = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>DB Safe – {tbl}</title>",
+        f"<title>DB Safe � {tbl}</title>",
         "<style>body{font-family:system-ui,Segoe UI,Arial;margin:0;background:#0f172a;color:#e5e7eb}",
         ".wrap{max-width:900px;margin:24px auto;padding:0 12px}",
         ".card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px}",
@@ -1318,7 +1318,7 @@ def admin_dbsafe():
         "a{color:#93c5fd}",
         "</style></head><body>",
         "<div class='wrap'><div class='card'>",
-        f"<h3 style='margin:0 0 12px'>DB Safe – {tbl}</h3>",
+        f"<h3 style='margin:0 0 12px'>DB Safe � {tbl}</h3>",
         "<div class='muted'>Edit values and click Save All. Adds new rows if key is new.</div>",
         "<div id='rows'>",
     ]
@@ -3011,7 +3011,7 @@ def api_smite():
                     ".muted{color:#9ca3af}.code{font-size:20px;letter-spacing:2px;background:#0b1020;border:1px solid #374151;padding:10px;border-radius:8px;display:flex;gap:8px;align-items:center;justify-content:space-between}"
                     ".btn{padding:8px 10px;border-radius:8px;border:1px solid #374151;background:#2563eb;color:#fff}</style></head><body>"
                     "<div class='card'><h3 style='margin-top:0'>Current downtime code</h3>"
-                    "<div class='code'><span>••••••••••••••••</span> "
+                    "<div class='code'><span>����������������</span> "
                     f"<button class='btn' onclick=\"navigator.clipboard.writeText('{code_once}')\">Copy</button></div>"
                     "<div class='muted' style='margin-top:8px'>Code rotates after each successful unlock.</div>"
                     "</div></body></html>"
@@ -8037,7 +8037,7 @@ def on_send_message(data):
             if isinstance(info, dict):
                 priv = info.get('private') or ''
                 pub = info.get('public') or ''
-                emit("system_message", store_system_message(f"IPs of {target} — private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
+                emit("system_message", store_system_message(f"IPs of {target} � private: {priv or 'n/a'}, public: {pub or 'n/a'}"))
             else:
                 ip = info or ''
                 if ip:
@@ -9265,7 +9265,7 @@ LOGIN_HTML = """
 <html data-default-language="{{ my_language }}" lang="{{ my_language }}">
 <head>
     <meta charset="utf-8">
-    <title>Chatter — Login</title>
+    <title>Chatter � Login</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9298,7 +9298,7 @@ REGISTER_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Chatter — Register</title>
+    <title>Chatter � Register</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <style>{{ base_css }}</style>
 </head>
@@ -9348,104 +9348,6 @@ CHAT_HTML = """
         body.show-leftbar #mobileBackdrop,
         body.show-rightbar #mobileBackdrop { display:block; }
         header { position:sticky; top:0; background:var(--bg); z-index:5; padding-bottom:6px; }
-      /* Enhanced Reports System Styling */
-      .filter-btn {
-        transition: all 0.2s ease;
-      }
-      
-      .filter-btn:hover {
-        background: #f3f4f6 !important;
-        border-color: #9ca3af !important;
-      }
-      
-      .filter-btn.active {
-        background: #374151 !important;
-        color: #fff !important;
-        border-color: #374151 !important;
-      }
-      
-      .report-item {
-        transition: all 0.2s ease;
-      }
-      
-      .report-item:hover {
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      }
-      
-      .report-header:hover {
-        background: #f1f5f9 !important;
-      }
-      
-      .report-details {
-        transition: all 0.3s ease;
-        overflow: hidden;
-      }
-      
-      #reportsOverlay {
-        backdrop-filter: blur(2px);
-      }
-      
-      #reportsBox {
-        animation: slideIn 0.3s ease-out;
-      }
-      
-      @keyframes slideIn {
-        from {
-          opacity: 0;
-          transform: translateY(-20px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-      
-      /* Custom scrollbar for reports content */
-      #reportsContent::-webkit-scrollbar {
-        width: 8px;
-      }
-      
-      #reportsContent::-webkit-scrollbar-track {
-        background: #f1f5f9;
-        border-radius: 4px;
-      }
-      
-      #reportsContent::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 4px;
-      }
-      
-      #reportsContent::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
-      }
-      
-      /* Mobile responsive for reports */
-      @media (max-width: 768px) {
-        #reportsBox {
-          margin: 20px;
-          max-width: calc(100vw - 40px);
-        }
-        
-        #reportsContent {
-          max-height: 60vh;
-        }
-        
-        .filter-btn {
-          font-size: 12px;
-          padding: 4px 8px;
-        }
-        
-        .report-header {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 8px;
-        }
-        
-        .report-details > div {
-          grid-template-columns: 1fr !important;
-        }
-      }
-
         .chat { min-height: calc(100vh - 56px - 160px); }
         .form-row { position:sticky; bottom:56px; background:var(--bg); padding:6px 0; }
         #textInput { font-size:16px; padding:12px; min-height:44px; }
@@ -9470,7 +9372,7 @@ CHAT_HTML = """
                 <div style="display:flex;gap:6px;align-items:center">
                     <button id="goPublicBtn" type="button" style="padding:4px 8px;font-size:12px;background:#374151"># Public</button>
                     <div style="position:relative;display:inline-block">
-                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ▾</button>
+                      <button id="newMenuBtn" type="button" style="padding:4px 8px;font-size:12px">+ New ?</button>
                       <div id="newMenu" style="display:none;position:absolute;right:0;top:100%;background:#0b1020;border:1px solid #374151;border-radius:8px;min-width:180px;z-index:50">
                         <a href="#" id="optNewDM" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Direct Message</a>
                         <a href="#" id="optNewGroup" style="display:block;padding:8px 10px;color:#e5e7eb;text-decoration:none">New Group Chat</a>
@@ -9490,7 +9392,7 @@ CHAT_HTML = """
         <header>
             <h1>
                 <span style="font-size:22px;font-weight:700">Chatter</span>
-                <small>— chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
+                <small>� chat{% if is_admin %} <span style="color:coral">(admin)</span>{% endif %}</small>
             </h1>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;">
                 <div class="note">
@@ -9503,11 +9405,11 @@ CHAT_HTML = """
                 <div style="display:flex;gap:10px;align-items:center">
                     {% if username in superadmins or is_admin %}
                     <button id="btnAdminDashHeader" type="button" title="Admin Dashboard" style="background:#374151;color:#fff">Admin Dashboard</button>
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
                     {% endif %}
                     <button id="settingsBtn" type="button">Settings</button>
                     {% if username not in superadmins %}
-                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">📌</button>
+                    <button id="pinsBtn" type="button" title="View Pinned Messages" style="padding:6px 10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">??</button>
                     {% endif %}
                     <a href="/logout" style="color:var(--muted);text-decoration:underline">Log out</a>
                 </div>
@@ -9542,7 +9444,7 @@ CHAT_HTML = """
     <div id="pinsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:10005;">
       <div style="position:relative;max-width:680px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
         <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary)">
-          <strong>📌 Pinned Messages</strong>
+          <strong>?? Pinned Messages</strong>
           <button id="closePinsOverlay" type="button" style="padding:6px 10px">&#10005;</button>
         </div>
         <div id="pinsList" style="padding:14px;max-height:70vh;overflow-y:auto;color:var(--primary)"></div>
@@ -9577,7 +9479,7 @@ CHAT_HTML = """
               <button id="adminDmCloseAllBtn" type="button" class="btn btn-secondary">Close All My DMs</button>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <input id="adminDmTo" placeholder="send as System → username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
+              <input id="adminDmTo" placeholder="send as System ? username" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)" />
               <textarea id="adminDmText" rows="2" placeholder="message text" style="flex:2;min-width:260px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--primary)"></textarea>
               <button id="adminDmSendBtn" type="button" class="btn btn-primary">Send DM as System</button>
             </div>
@@ -9752,8 +9654,8 @@ CHAT_HTML = """
               <div class="note">Bio shows on hover and in DM header. Status affects your presence color.</div>
               <hr style="margin:10px 0;border:none;border-top:1px dashed #ccc">
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button id="markAllReadBtn" type="button" class="btn btn-primary">✓ Mark All As Read</button>
-                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">🧹 Clear All Messages</button>
+                <button id="markAllReadBtn" type="button" class="btn btn-primary">? Mark All As Read</button>
+                <button id="clearAllMsgs" type="button" class="btn btn-danger" style="display:none">?? Clear All Messages</button>
               </div>
             </div>
           </div>
@@ -9778,48 +9680,26 @@ CHAT_HTML = """
       </div>
     </div>
     <!-- Reports Management Panel -->
-    <!-- Reports Overlay - Solid Popup Mode -->
-    <div id="reportsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10015;overflow:auto;">
-      <div id="reportsBox" style="position:relative;max-width:900px;margin:40px auto;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
-        <div id="reportsHeader" style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;color:var(--primary);background:var(--card);border-radius:12px 12px 0 0;">
-          <div style="display:flex;align-items:center;gap:12px;">
-            <strong style="font-size:16px;">📋 Reports Management</strong>
-            <div id="reportsCount" style="background:#374151;color:#fff;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500;">0 reports</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button id="detachReports" type="button" title="Detach to floating window" style="padding:6px 10px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;">🔗 Detach</button>
-            <button id="refreshReports" type="button" title="Refresh reports" style="padding:6px 10px;background:#059669;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;">🔄 Refresh</button>
-            <button id="closeReports" type="button" style="padding:6px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;">✕</button>
-          </div>
-        </div>
-        
-        <!-- Filter Bar -->
-        <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:#f8fafc;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <span style="font-weight:600;color:#374151;margin-right:8px;">Filter by status:</span>
-          <button class="filter-btn active" data-status="all" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">All</button>
-          <button class="filter-btn" data-status="pending" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Pending</button>
-          <button class="filter-btn" data-status="reviewed" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Reviewed</button>
-          <button class="filter-btn" data-status="resolved" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Resolved</button>
-          <button class="filter-btn" data-status="dismissed" style="padding:6px 12px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">Dismissed</button>
-        </div>
-        
-        <!-- Reports Content -->
-        <div id="reportsContent" style="padding:16px;overflow-y:auto;max-height:70vh;color:var(--primary);">
-          <div id="reportsLoading" style="text-align:center;padding:40px;color:var(--muted);">
-            <div style="font-size:24px;margin-bottom:12px;">⏳</div>
-            <div style="font-size:16px;font-weight:500;">Loading reports...</div>
-          </div>
-          <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
-            <div style="font-size:24px;margin-bottom:12px;">📄</div>
-            <div style="font-size:16px;font-weight:500;">No reports found</div>
-            <div style="font-size:14px;margin-top:8px;">Try adjusting your filter or check back later.</div>
-          </div>
-          <div id="reportsList" style="display:none;"></div>
+    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:400px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
+        <span>&#128203; Reports Management</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="refreshReports" type="button" class="btn btn-primary" style="padding:4px 8px;font-size:12px;">&#128260; Refresh</button>
+          <button id="closeReports" type="button" class="btn btn-outline" style="padding:4px 8px;font-size:12px;">&#10005;</button>
         </div>
       </div>
+      <div id="reportsContent" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
+        <div id="reportsLoading" style="text-align:center;padding:30px;color:var(--muted);">
+          <div style="font-size:20px;margin-bottom:8px;">?</div>
+          <div>Loading reports...</div>
+        </div>
+        <div id="reportsEmpty" style="display:none;text-align:center;padding:30px;color:var(--muted);">
+          <div style="font-size:20px;margin-bottom:8px;">??</div>
+          <div>No reports found</div>
+        </div>
+        <div id="reportsList" style="display:none;"></div>
+      </div>
     </div>
-
-
 
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -10020,7 +9900,7 @@ CHAT_HTML = """
             row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.marginTop = '6px';
             const hint = document.createElement('div');
             hint.style.color = '#9ca3af'; hint.style.fontSize = '12px';
-            hint.textContent = 'escape to cancel • enter to save • shift+enter for newline';
+            hint.textContent = 'escape to cancel � enter to save � shift+enter for newline';
             const saveBtn = document.createElement('button');
             saveBtn.type = 'button'; saveBtn.className = 'btn btn-primary'; saveBtn.textContent = 'Save';
             row.appendChild(hint); row.appendChild(saveBtn);
@@ -10277,7 +10157,7 @@ CHAT_HTML = """
             });
             // Voice channels
             const v = Array.isArray(voiceChannelsCache)? voiceChannelsCache: [];
-            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">🔊 ${c}</a></div>`); });
+            v.forEach(c=>{ list.push(`<div><a href="#" data-voice="${c}">?? ${c}</a></div>`); });
             gdmListEl.innerHTML = list.length ? list.join('') : '<div style="color:#999">No channels</div>';
             // Wire clicks
             gdmListEl.querySelectorAll('a[data-gdm]').forEach(a=>{ a.onclick=(e)=>{ e.preventDefault(); const tid=parseInt(a.getAttribute('data-gdm'),10); if(!isNaN(tid)) openGDM(tid); if (isMobile()) closeOverlays(); }; });
@@ -10680,7 +10560,7 @@ CHAT_HTML = """
           
           pinnedMessageEl.innerHTML = `
             <div style='display:flex;align-items:flex-start;gap:10px'>
-              <div style='font-size:20px'>📌</div>
+              <div style='font-size:20px'>??</div>
               <div style='flex:1;min-width:0'>
                 <div style='display:flex;align-items:center;gap:8px;margin-bottom:4px'>
                   <img src='${mAva}' alt='' style='width:20px;height:20px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
@@ -10767,7 +10647,7 @@ CHAT_HTML = """
             try {
                 // Only show if not currently in this DM
                 if (info && info.from && info.to && ((currentMode !== 'dm') || currentPeer !== info.from)) {
-                    globalTypingBar.textContent = `${info.from} is typing in your DM…`;
+                    globalTypingBar.textContent = `${info.from} is typing in your DM�`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('your DM')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10777,7 +10657,7 @@ CHAT_HTML = """
             try {
                 if (info && info.thread_id && ((currentMode !== 'gdm') || currentThreadId !== info.thread_id)) {
                     const name = (gdmThreadsCache[info.thread_id] && gdmThreadsCache[info.thread_id].name) || `Group ${info.thread_id}`;
-                    globalTypingBar.textContent = `${info.from} is typing in ${name}…`;
+                    globalTypingBar.textContent = `${info.from} is typing in ${name}�`;
                     try { Language.translateFragment(globalTypingBar); } catch(_){}
                     setTimeout(() => { if (globalTypingBar.textContent.includes('is typing in')) globalTypingBar.textContent=''; }, 3000);
                 }
@@ -10786,9 +10666,9 @@ CHAT_HTML = """
 
         function formatTyping(users) {
             if (!users || users.length === 0) return '';
-            if (users.length === 1) return users[0] + ' is typing…';
-            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing…';
-            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing…';
+            if (users.length === 1) return users[0] + ' is typing�';
+            if (users.length === 2) return users[0] + ' and ' + users[1] + ' are typing�';
+            return users[0] + ', ' + users[1] + ' and ' + (users.length - 2) + ' others are typing�';
         }
 
         // Load existing messages immediately when connected
@@ -11078,9 +10958,9 @@ CHAT_HTML = """
                     </div>`;
                 }).join('');
                 rightOnlineList.innerHTML = `
-                  <div style='font-weight:700;margin:6px 0'>Online — ${online.length}</div>
+                  <div style='font-weight:700;margin:6px 0'>Online � ${online.length}</div>
                   ${online.map(renderUser).join('') || "<div class='note'>No one online</div>"}
-                  <div style='font-weight:700;margin:10px 0 6px'>Offline — ${offline.length}</div>
+                  <div style='font-weight:700;margin:10px 0 6px'>Offline � ${offline.length}</div>
                   ${offline.map(renderUser).join('') || "<div class='note'>No one offline</div>"}
                 `;
 
@@ -11240,7 +11120,7 @@ CHAT_HTML = """
                 } catch(e) {}
             }));
             if (user !== me) {
-                menu.appendChild(makeItem('🚨 Report User', () => {
+                menu.appendChild(makeItem('?? Report User', () => {
                     showReportModal('user', {
                         target_username: user
                     });
@@ -11354,9 +11234,9 @@ CHAT_HTML = """
                     <strong>@${esc(peer)}</strong>
                     ${statusBadge}
                   </span>
-                  — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                  � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             } catch(e) {
-                modeBar.innerHTML = `DM with ${peer} — <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
+                modeBar.innerHTML = `DM with ${peer} � <span id='backToPublic' style='color:blue;cursor:pointer;text-decoration:underline'>back</span>`;
             }
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
@@ -11402,7 +11282,7 @@ CHAT_HTML = """
             // Close is per-user local hide
             buttons += `
                 <button id='btnGdmClose' type='button' class='btn btn-secondary'>Close</button>`;
-            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} — ${buttons}`;
+            modeBar.innerHTML = `Group ${tinfo.name ? ('# '+tinfo.name) : ('#'+tid)} � ${buttons}`;
             try { Language.translateFragment(modeBar); } catch(_){}
             document.getElementById('backToPublic').onclick = switchToPublic;
             // reset unread for this group
@@ -11641,7 +11521,7 @@ CHAT_HTML = """
                         );
                     }
                     if (canEdit) {
-                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
+                        contextMenu.appendChild(makeItem('? Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('edit_message', { id: m.id, text: txt }); });
@@ -11649,18 +11529,18 @@ CHAT_HTML = """
                     }
 
                     // Reply
-                    contextMenu.appendChild(makeItem('↩ Reply', () => {
+                    contextMenu.appendChild(makeItem('? Reply', () => {
                         setReply({ type:'public', id: m.id, username: m.username, snippet: d.querySelector('.msg-body')?.innerText || '' });
                     }));
                     // Delete item
-                    contextMenu.appendChild(makeItem('🗑️ Delete message', () => {
+                    contextMenu.appendChild(makeItem('??? Delete message', () => {
                         socket.emit('delete_message', m.id);
                     }));
                     // DM Sender
                     if (m.username && m.username !== me) {
-                        contextMenu.appendChild(makeItem('💬 DM', () => { openDM(m.username); }));
+                        contextMenu.appendChild(makeItem('?? DM', () => { openDM(m.username); }));
                         // Report Message
-                        contextMenu.appendChild(makeItem('🚨 Report Message', () => {
+                        contextMenu.appendChild(makeItem('?? Report Message', () => {
                             showReportModal('message', {
                                 message_id: m.id,
                                 target_username: m.username
@@ -11747,14 +11627,14 @@ CHAT_HTML = """
                         return item;
                     };
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('✏ Edit DM', () => {
+                        contextMenu.appendChild(makeItem('? Edit DM', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('dm_edit', { id: dm.id, text: txt }); });
                         }));
                     }
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('🗑️ Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
+                        contextMenu.appendChild(makeItem('??? Delete DM', () => { socket.emit('dm_delete', { id: dm.id }); }));
                     }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
@@ -11827,14 +11707,14 @@ CHAT_HTML = """
                         return item;
                     };
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('✏ Edit message', () => {
+                        contextMenu.appendChild(makeItem('? Edit message', () => {
                             const body = d.querySelector('.msg-body');
                             if (!body) return;
                             startInlineEdit(body, body.innerHTML, (txt)=>{ socket.emit('gdm_edit', { id: m.id, text: txt }); });
                         }));
                     }
                     if (canModify) {
-                        contextMenu.appendChild(makeItem('🗑️ Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
+                        contextMenu.appendChild(makeItem('??? Delete message', () => { socket.emit('gdm_delete', { id: m.id }); }));
                     }
                     document.body.appendChild(contextMenu);
                     document.addEventListener('click', e => { if (contextMenu && !contextMenu.contains(e.target)) { contextMenu.remove(); contextMenu = null; } }, { once: true });
@@ -11881,7 +11761,7 @@ CHAT_HTML = """
                 const secs = Math.max(0, Math.floor(timeoutUntil - Date.now()/1000));
                 const msg = `You are timed out for ${secs} more seconds`;
                 const cur = modeBarNote.textContent || '';
-                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' — ' : '') + msg; }
+                if (!cur.includes('timed out')) { modeBarNote.textContent = (cur? cur + ' � ' : '') + msg; }
             }catch(e){}
 
         // Group lock status UX: banner + disable inputs if locked
@@ -12205,7 +12085,7 @@ CHAT_HTML = """
                 const isLatest = idx === 0;
                 return `
                   <div style='border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px;background:${isLatest ? '#fffbe6' : '#fff'}'>
-                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">📌 Latest Pin</div>' : ''}
+                    ${isLatest ? '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px">?? Latest Pin</div>' : ''}
                     <div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>
                       <img src='${mAva}' alt='' style='width:24px;height:24px;border-radius:50%;border:1px solid #ddd;object-fit:cover;'>
                       <span style='font-weight:700'>${esc(msg.username)}</span>
@@ -12885,7 +12765,7 @@ CHAT_HTML = """
                   if (tip) return;
                   tip = document.createElement('div');
                   tip.className = 'popover';
-                  tip.textContent = 'DANGER — MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
+                  tip.textContent = 'DANGER � MAY HAVE UNEXPECTED CONSEQUENCES (bans entire public IP). Use only if necessary.';
                   tip.style.position = 'fixed';
                   tip.style.left = (e.clientX + 10) + 'px';
                   tip.style.top = (e.clientY + 10) + 'px';
@@ -13206,7 +13086,7 @@ CHAT_HTML = """
                   if (!r.ok){ out.textContent = j.error||'Failed'; return; }
                   const items = j.items||[];
                   out.innerHTML = items.map(m=>`<div style='border-bottom:1px dashed #e5e7eb;padding:4px 0'>
-                    <div style='font-size:12px;color:#6b7280'>#${m.id} — ${m.username} — ${m.created_at}</div>
+                    <div style='font-size:12px;color:#6b7280'>#${m.id} � ${m.username} � ${m.created_at}</div>
                     <div>${m.text}</div>
                   </div>`).join('') || '<span style="color:#666">None</span>';
                 }catch(e){ const out = box.querySelector('#mtHistOut'); if (out) out.textContent = 'Failed'; }
@@ -13849,7 +13729,7 @@ async function searchUsers(query) {
                          alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">
                     <div style="flex:1;">
                         <div style="font-weight:bold;color:var(--primary);">@${user.username}</div>
-                        <div style="font-size:12px;color:var(--muted);">${user.status || 'offline'} • ${user.bio || 'No bio'}</div>
+                        <div style="font-size:12px;color:var(--muted);">${user.status || 'offline'} � ${user.bio || 'No bio'}</div>
                     </div>
                     <div style="width:8px;height:8px;border-radius:50%;background:${getStatusColor(user.status)};"></div>
                 </div>
@@ -13906,11 +13786,11 @@ function closeUserSearchModal() {
 
 // Socket.IO event listeners for reporting
 socket.on('report_success', (data) => {
-    showToast('✅ Report submitted successfully', 'success');
+    showToast('? Report submitted successfully', 'success');
 });
 
 socket.on('report_error', (data) => {
-    showToast('❌ ' + data.message, 'error');
+    showToast('? ' + data.message, 'error');
 });
 
 // Toast notification system
@@ -13962,24 +13842,29 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-        // Reports Management Functions - Enhanced Version
-        let currentReportsFilter = 'all';
-        let currentReportsOffset = 0;
-        let reportsMode = 'popup'; // 'popup' or 'floating'
-        let reportsList = [];
-
+        // Reports Management Functions
         function openReportsPanel() {
           try {
-            // Close settings overlay first
-            try {
-              document.getElementById('settingsOverlay').style.display = 'none';
-            } catch(e) {}
-            
-            // Open in floating mode by default
-            document.getElementById('reportsOverlay').style.display = 'block';
-            // Show reports overlay
-            
-            loadReports('all');
+            document.getElementById('reportsPanel').style.display = 'block';
+            // Make panel draggable
+            const panel = document.getElementById("reportsPanel");
+            const header = panel.querySelector("div");
+            let isDragging = false, startX, startY, initialX, initialY;
+            header.onmousedown = (e) => {
+              isDragging = true;
+              startX = e.clientX; startY = e.clientY;
+              const rect = panel.getBoundingClientRect();
+              initialX = rect.left; initialY = rect.top;
+              panel.style.transform = "none";
+              panel.style.left = initialX + "px"; panel.style.top = initialY + "px";
+            };
+            document.onmousemove = (e) => {
+              if (!isDragging) return;
+              panel.style.left = (initialX + e.clientX - startX) + "px";
+              panel.style.top = (initialY + e.clientY - startY) + "px";
+            };
+            document.onmouseup = () => { isDragging = false; };
+            loadReports();
           } catch(e) {
             console.error('Error opening reports panel:', e);
           }
@@ -13987,32 +13872,22 @@ function showToast(message, type = 'info') {
 
         function closeReportsPanel() {
           try {
-            document.getElementById('reportsOverlay').style.display = 'none';
-            document.getElementById('reportsOverlay').style.display = 'none';
+            document.getElementById('reportsPanel').style.display = 'none';
           } catch(e) {
             console.error('Error closing reports panel:', e);
           }
         }
 
-
-
-
         function loadReports(status = 'all', offset = 0, limit = 50) {
           try {
-            currentReportsFilter = status;
-            currentReportsOffset = offset;
-            
             // Show loading state
             document.getElementById('reportsLoading').style.display = 'block';
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
             
-            // Sync loading state to floating panel
-            syncReportsContent();
-            
-            // Emit request to server
+            // Emit fetch request
             socket.emit('fetch_reports', {
-              status: status === 'all' ? null : status,
+              status: status,
               offset: offset,
               limit: limit
             });
@@ -14021,137 +13896,168 @@ function showToast(message, type = 'info') {
           }
         }
 
-        function renderReports(reports, total) {
+        function renderReports(data) {
           try {
+            const reports = data.reports || [];
+            const reportsLoading = document.getElementById('reportsLoading');
+            const reportsEmpty = document.getElementById('reportsEmpty');
             const reportsList = document.getElementById('reportsList');
-            const reportsCount = document.getElementById('reportsCount');
-            
-            // Update count badge
-            if (reportsCount) {
-              reportsCount.textContent = `${total} report${total !== 1 ? 's' : ''}`;
-            }
-            
-            // Hide loading, show content
-            document.getElementById('reportsLoading').style.display = 'none';
-            
+
+            // Hide loading
+            reportsLoading.style.display = 'none';
+
             if (reports.length === 0) {
-              document.getElementById('reportsEmpty').style.display = 'block';
-              document.getElementById('reportsList').style.display = 'none';
+              reportsEmpty.style.display = 'block';
+              reportsList.style.display = 'none';
               return;
             }
+
+            // Show reports list
+            reportsEmpty.style.display = 'none';
+            reportsList.style.display = 'block';
             
-            document.getElementById('reportsEmpty').style.display = 'none';
-            document.getElementById('reportsList').style.display = 'block';
+            // Render each report
+            reportsList.innerHTML = reports.map(report => renderReportItem(report)).join('');
             
-            // Generate report items with expandable dropdowns
-            let html = '';
-            reports.forEach(report => {
-              const statusColor = getStatusColor(report.status);
-              const statusBadge = `<span style="background:${statusColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;">${report.status.toUpperCase()}</span>`;
-              
-              html += `
-                <div class="report-item" style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;background:var(--card);">
-                  <div class="report-header" onclick="toggleReportDetails(${report.id})" style="padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;background:#f8fafc;border-bottom:1px solid #e5e7eb;">
-                    <div style="flex:1;">
-                      <div style="font-weight:600;color:#374151;margin-bottom:4px;">
-                        <span id="report-arrow-${report.id}" style="margin-right:8px;transition:transform 0.2s;">▶</span>
-                        User Reported: ${report.reason}
-                      </div>
-                      <div style="font-size:13px;color:#6b7280;">
-                        <strong>${report.reporter_username}</strong> reported <strong>${report.target_username || report.target_id}</strong> • ${formatDate(report.created_at)}
-                      </div>
-                    </div>
-                    <div style="display:flex;align-items:center;gap:8px;">
-                      ${statusBadge}
-                    </div>
-                  </div>
-                  <div id="report-details-${report.id}" class="report-details" style="display:none;padding:16px;border-top:1px solid #e5e7eb;">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-                      <div>
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Report Type</div>
-                        <div style="color:#6b7280;">${report.report_type}</div>
-                      </div>
-                      <div>
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Target</div>
-                        <div style="color:#6b7280;">${report.target_username || report.target_id}</div>
-                      </div>
-                    </div>
-                    ${report.details ? `
-                      <div style="margin-bottom:16px;">
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Details</div>
-                        <div style="color:#6b7280;background:#f9fafb;padding:8px;border-radius:4px;border:1px solid #e5e7eb;">${report.details}</div>
-                      </div>
-                    ` : ''}
-                    ${report.admin_notes ? `
-                      <div style="margin-bottom:16px;">
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Admin Notes</div>
-                        <div style="color:#6b7280;background:#fef3c7;padding:8px;border-radius:4px;border:1px solid #fbbf24;">${report.admin_notes}</div>
-                      </div>
-                    ` : ''}
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                      <select id="status-${report.id}" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;">
-                        <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
-                        <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
-                        <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
-                        <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
-                      </select>
-                      <input id="notes-${report.id}" placeholder="Add admin notes..." value="${report.admin_notes || ''}" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;" />
-                      <button onclick="updateReportStatus(${report.id})" style="padding:6px 12px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;">Update</button>
-                      <button onclick="deleteReport(${report.id})" style="padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">Delete</button>
-                    </div>
-                  </div>
-                </div>
-              `;
-            });
-            
-            reportsList.innerHTML = html;
-            
-            // Sync to floating panel if in floating mode
-            if (reportsMode === 'floating') {
-              syncReportsContent();
-            }
-            
+            // Bind event handlers
+            bindReportHandlers();
           } catch(e) {
             console.error('Error rendering reports:', e);
           }
         }
 
-        function toggleReportDetails(reportId) {
+        function renderReportItem(report) {
+          const statusColors = {
+            'pending': '#f59e0b',
+            'reviewed': '#3b82f6',
+            'resolved': '#10b981',
+            'dismissed': '#6b7280'
+          };
+          
+          const statusColor = statusColors[report.status] || '#6b7280';
+          const createdDate = new Date(report.created_at).toLocaleString();
+          const resolvedInfo = report.resolved_at ? 
+            `<div style="font-size:11px;color:var(--muted);margin-top:4px">
+              Resolved: ${new Date(report.resolved_at).toLocaleString()} by ${report.resolved_by}
+            </div>` : '';
+
+          return `
+            <div class="report-item" data-report-id="${report.id}" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--card);font-size:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+                <div>
+                  <span style="font-weight:bold;color:var(--primary);">${report.report_type.toUpperCase()}</span>
+                  <span style="background:${statusColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-left:6px;">${report.status.toUpperCase()}</span>
+                </div>
+                <div style="font-size:10px;color:var(--muted);">${createdDate}</div>
+              </div>
+              <div style="margin-bottom:6px;font-size:11px;">
+                <strong>Target:</strong> ${report.target_username}<br>
+                <strong>Reporter:</strong> ${report.reporter_username}<br>
+                <strong>Reason:</strong> ${report.reason}
+              </div>
+              ${report.details ? `<div style="margin-bottom:6px;padding:6px;background:var(--muted);border-radius:3px;font-size:11px;">${report.details}</div>` : ''}
+              ${report.admin_notes ? `<div style="margin-bottom:6px;font-size:11px;"><strong>Admin Notes:</strong><br><div style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:3px;">${report.admin_notes}</div></div>` : ''}
+              ${resolvedInfo}
+              <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;">
+                <select class="report-status-select" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
+                  <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
+                  <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
+                  <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
+                  <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
+                </select>
+                <input class="report-notes-input" type="text" placeholder="Admin notes..." value="${report.admin_notes || ''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:3px;font-size:11px;">
+                <div style="display:flex;gap:4px;">
+                  <button class="update-report-btn" type="button" style="flex:1;padding:3px 8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Update</button>
+                  <button class="delete-report-btn" type="button" style="flex:1;padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">Delete</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
+        function bindReportHandlers() {
           try {
-            const details = document.getElementById(`report-details-${reportId}`);
-            const arrow = document.getElementById(`report-arrow-${reportId}`);
-            
-            if (details.style.display === 'none') {
-              details.style.display = 'block';
-              arrow.style.transform = 'rotate(90deg)';
-              arrow.textContent = '▼';
-            } else {
-              details.style.display = 'none';
-              arrow.style.transform = 'rotate(0deg)';
-              arrow.textContent = '▶';
-            }
+            // Update report handlers
+            document.querySelectorAll('.update-report-btn').forEach(btn => {
+              btn.onclick = function() {
+                const reportItem = this.closest('.report-item');
+                const reportId = reportItem.dataset.reportId;
+                const status = reportItem.querySelector('.report-status-select').value;
+                const notes = reportItem.querySelector('.report-notes-input').value;
+                
+                socket.emit('update_report_status', {
+                  report_id: parseInt(reportId),
+                  status: status,
+                  admin_notes: notes
+                });
+              };
+            });
+
+            // Delete report handlers
+            document.querySelectorAll('.delete-report-btn').forEach(btn => {
+              btn.onclick = function() {
+                const reportItem = this.closest('.report-item');
+                const reportId = reportItem.dataset.reportId;
+                
+                if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
+                  socket.emit('delete_report', {
+                    report_id: parseInt(reportId)
+                  });
+                }
+              };
+            });
           } catch(e) {
-            console.error('Error toggling report details:', e);
+            console.error('Error binding report handlers:', e);
           }
         }
 
-        function getStatusColor(status) {
-          switch(status) {
-            case 'pending': return '#f59e0b';
-            case 'reviewed': return '#3b82f6';
-            case 'resolved': return '#059669';
-            case 'dismissed': return '#6b7280';
-            default: return '#374151';
-          }
-        }
-
-        function formatDate(dateStr) {
+        // Socket.IO event listeners for reports
+        socket.on('reports_data', renderReports);
+        
+        socket.on('reports_error', function(data) {
           try {
-            const date = new Date(dateStr);
-            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+            document.getElementById('reportsLoading').style.display = 'none';
+            showToast('Error loading reports: ' + (data.message || 'Unknown error'), 'error');
           } catch(e) {
-            return dateStr;
-        // Bind reports button click handlers
+            console.error('Error handling reports_error:', e);
+          }
+        });
+
+        socket.on('report_update_success', function(data) {
+          try {
+            showToast('Report updated successfully!', 'ok');
+            loadReports(); // Refresh the list
+          } catch(e) {
+            console.error('Error handling report_update_success:', e);
+          }
+        });
+
+        socket.on('report_update_error', function(data) {
+          try {
+            showToast('Error updating report: ' + (data.message || 'Unknown error'), 'error');
+          } catch(e) {
+            console.error('Error handling report_update_error:', e);
+          }
+        });
+
+        socket.on('report_delete_success', function(data) {
+          try {
+            showToast('Report deleted successfully!', 'ok');
+            loadReports(); // Refresh the list
+          } catch(e) {
+            console.error('Error handling report_delete_success:', e);
+          }
+        });
+
+        socket.on('report_delete_error', function(data) {
+          try {
+            showToast('Error deleting report: ' + (data.message || 'Unknown error'), 'error');
+          } catch(e) {
+            console.error('Error handling report_delete_error:', e);
+          }
+        });
+
+        // Bind reports button click handler
         try {
           const reportsBtn = document.getElementById('btnReportsSettings');
           if (reportsBtn) {
@@ -14161,137 +14067,16 @@ function showToast(message, type = 'info') {
           console.error('Error binding reports button:', e);
         }
 
-        // Bind panel close and action handlers
+        // Bind panel close handlers
         try {
           const closeBtn = document.getElementById('closeReports');
           const refreshBtn = document.getElementById('refreshReports');
           
           if (closeBtn) closeBtn.onclick = closeReportsPanel;
-
-          // Add click-outside-to-close functionality
-          const reportsOverlay = document.getElementById('reportsOverlay');
-          if (reportsOverlay) {
-            reportsOverlay.onclick = function(e) {
-              if (e.target === reportsOverlay) {
-                closeReportsPanel();
-              }
-            };
-          }
-          if (refreshBtn) refreshBtn.onclick = () => loadReports(currentReportsFilter);
-          
-          // Setup filter buttons
-          setupFilterButtons();
-          
-          // Close overlay when clicking outside
-          document.getElementById('reportsOverlay').onclick = function(e) {
-            if (e.target === this) {
-              closeReportsPanel();
-            }
-          };
-          
+          if (refreshBtn) refreshBtn.onclick = () => loadReports();
         } catch(e) {
           console.error('Error binding panel handlers:', e);
         }
-
-          }
-        }
-
-        function updateReportStatus(reportId) {
-          try {
-            const status = document.getElementById(`status-${reportId}`).value;
-            const notes = document.getElementById(`notes-${reportId}`).value;
-            
-            socket.emit('update_report_status', {
-              report_id: reportId,
-              status: status,
-              admin_notes: notes
-            });
-          } catch(e) {
-            console.error('Error updating report status:', e);
-          }
-        }
-
-        function deleteReport(reportId) {
-          try {
-            if (confirm('Are you sure you want to delete this report?')) {
-              socket.emit('delete_report', { report_id: reportId });
-            }
-          } catch(e) {
-            console.error('Error deleting report:', e);
-          }
-        }
-
-        // Filter button handlers
-        function setupFilterButtons() {
-          try {
-            const filterButtons = document.querySelectorAll('.filter-btn');
-            filterButtons.forEach(btn => {
-              btn.addEventListener('click', function() {
-                // Remove active class from all buttons
-                filterButtons.forEach(b => {
-                  b.classList.remove('active');
-                  b.style.background = '#fff';
-                  b.style.color = '#374151';
-                });
-                
-                // Add active class to clicked button
-                this.classList.add('active');
-                this.style.background = '#374151';
-                this.style.color = '#fff';
-                
-                // Load reports with new filter
-                const status = this.dataset.status;
-                loadReports(status);
-              });
-            });
-          } catch(e) {
-            console.error('Error setting up filter buttons:', e);
-          }
-        }
-
-        // Socket event handlers for reports
-        socket.on('reports_data', function(data) {
-          try {
-            renderReports(data.reports || [], data.total || 0);
-          } catch(e) {
-            console.error('Error handling reports data:', e);
-          }
-        });
-
-        socket.on('reports_error', function(data) {
-          try {
-            document.getElementById('reportsLoading').style.display = 'none';
-            document.getElementById('reportsEmpty').style.display = 'block';
-            document.getElementById('reportsEmpty').innerHTML = `
-              <div style="text-align:center;padding:40px;color:var(--muted);">
-                <div style="font-size:24px;margin-bottom:12px;">⚠️</div>
-                <div style="font-size:16px;font-weight:500;">Error loading reports</div>
-                <div style="font-size:14px;margin-top:8px;">${data.message || 'Unknown error occurred'}</div>
-              </div>
-            `;
-          } catch(e) {
-            console.error('Error handling reports error:', e);
-          }
-        });
-
-        socket.on('report_updated', function(data) {
-          try {
-            // Reload reports to show updated data
-            loadReports(currentReportsFilter, currentReportsOffset);
-          } catch(e) {
-            console.error('Error handling report update:', e);
-          }
-        });
-
-        socket.on('report_deleted', function(data) {
-          try {
-            // Reload reports to remove deleted item
-            loadReports(currentReportsFilter, currentReportsOffset);
-          } catch(e) {
-            console.error('Error handling report deletion:', e);
-          }
-        });
-
     </script>
 
 </body>

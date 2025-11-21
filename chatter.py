@@ -9819,20 +9819,6 @@ CHAT_HTML = """
       </div>
     </div>
 
-    <!-- Reports Panel - Floating Mode (Hidden by default) -->
-    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-        <span>📋 Reports Management</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button id="attachReports" type="button" title="Attach to main window" style="padding:4px 8px;background:#6366f1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">📌 Attach</button>
-          <button id="refreshReportsFloat" type="button" title="Refresh reports" style="padding:4px 8px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">🔄</button>
-          <button id="closeReportsFloat" type="button" style="padding:4px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">✕</button>
-        </div>
-      </div>
-      <div id="reportsContentFloat" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
-        <!-- Content will be synced with main reports content -->
-      </div>
-    </div>
 
 
 
@@ -13990,28 +13976,10 @@ function showToast(message, type = 'info') {
             } catch(e) {}
             
             // Open in floating mode by default
-            document.getElementById('reportsPanel').style.display = 'block';
-            reportsMode = 'floating';
+            document.getElementById('reportsOverlay').style.display = 'block';
+            // Show reports overlay
             
-            // Make panel draggable
-            const panel = document.getElementById("reportsPanel");
-            const header = panel.querySelector("div");
-            let isDragging = false;
-            let startX, startY, initialX, initialY;
-            header.onmousedown = (e) => {
-              isDragging = true;
-              startX = e.clientX;
-              startY = e.clientY;
-              initialX = panel.offsetLeft;
-              initialY = panel.offsetTop;
-            };
-            document.onmousemove = (e) => {
-              if (!isDragging) return;
-              panel.style.left = (initialX + e.clientX - startX) + "px";
-              panel.style.top = (initialY + e.clientY - startY) + "px";
-            };
-            document.onmouseup = () => { isDragging = false; };
-            loadReports();
+            loadReports('all');
           } catch(e) {
             console.error('Error opening reports panel:', e);
           }
@@ -14020,87 +13988,14 @@ function showToast(message, type = 'info') {
         function closeReportsPanel() {
           try {
             document.getElementById('reportsOverlay').style.display = 'none';
-            document.getElementById('reportsPanel').style.display = 'none';
+            document.getElementById('reportsOverlay').style.display = 'none';
           } catch(e) {
             console.error('Error closing reports panel:', e);
           }
         }
 
-        function detachReports() {
-          try {
-            // Switch from popup to floating mode
-            document.getElementById('reportsOverlay').style.display = 'none';
-            document.getElementById('reportsPanel').style.display = 'block';
-            reportsMode = 'floating';
-            
-            // Make panel draggable
-            const panel = document.getElementById("reportsPanel");
-            const header = panel.querySelector("div");
-            let isDragging = false, startX, startY, initialX, initialY;
-            header.onmousedown = (e) => {
-              isDragging = true;
-              startX = e.clientX; startY = e.clientY;
-              const rect = panel.getBoundingClientRect();
-              initialX = rect.left; initialY = rect.top;
-              panel.style.transform = "none";
-              panel.style.left = initialX + "px"; panel.style.top = initialY + "px";
-            };
-            document.onmousemove = (e) => {
-              if (!isDragging) return;
-              panel.style.left = (initialX + e.clientX - startX) + "px";
-              panel.style.top = (initialY + e.clientY - startY) + "px";
-            };
-            document.onmouseup = () => { isDragging = false; };
-            
-            // Sync content to floating panel
-            syncReportsContent();
-          } catch(e) {
-            console.error('Error detaching reports:', e);
-          }
-        }
 
-        function attachReports() {
-          try {
-            // Switch from floating to popup mode
-            document.getElementById('reportsPanel').style.display = 'none';
-            document.getElementById('reportsOverlay').style.display = 'block';
-            reportsMode = 'popup';
-          } catch(e) {
-            console.error('Error attaching reports:', e);
-          }
-        }
 
-        function syncReportsContent() {
-          try {
-            const floatContent = document.getElementById('reportsContentFloat');
-            if (floatContent && reportsMode === 'floating') {
-              // Copy loading state
-              const loading = document.getElementById('reportsLoading');
-              const empty = document.getElementById('reportsEmpty');
-              const list = document.getElementById('reportsList');
-              
-              if (loading && loading.style.display !== 'none') {
-                floatContent.innerHTML = `
-                  <div style="text-align:center;padding:30px;color:var(--muted);">
-                    <div style="font-size:20px;margin-bottom:8px;">u23f3</div>
-                    <div>Loading reports...</div>
-                  </div>
-                `;
-              } else if (empty && empty.style.display !== 'none') {
-                floatContent.innerHTML = `
-                  <div style="text-align:center;padding:30px;color:var(--muted);">
-                    <div style="font-size:20px;margin-bottom:8px;">ud83dudcc4</div>
-                    <div>No reports found</div>
-                  </div>
-                `;
-              } else if (list && list.style.display !== 'none') {
-                floatContent.innerHTML = list.innerHTML;
-              }
-            }
-          } catch(e) {
-            console.error('Error syncing reports content:', e);
-          }
-        }
 
         function loadReports(status = 'all', offset = 0, limit = 50) {
           try {
@@ -14270,17 +14165,19 @@ function showToast(message, type = 'info') {
         try {
           const closeBtn = document.getElementById('closeReports');
           const refreshBtn = document.getElementById('refreshReports');
-          const detachBtn = document.getElementById('detachReports');
-          const attachBtn = document.getElementById('attachReports');
-          const closeBtnFloat = document.getElementById('closeReportsFloat');
-          const refreshBtnFloat = document.getElementById('refreshReportsFloat');
           
           if (closeBtn) closeBtn.onclick = closeReportsPanel;
+
+          // Add click-outside-to-close functionality
+          const reportsOverlay = document.getElementById('reportsOverlay');
+          if (reportsOverlay) {
+            reportsOverlay.onclick = function(e) {
+              if (e.target === reportsOverlay) {
+                closeReportsPanel();
+              }
+            };
+          }
           if (refreshBtn) refreshBtn.onclick = () => loadReports(currentReportsFilter);
-          if (detachBtn) detachBtn.onclick = detachReports;
-          if (attachBtn) attachBtn.onclick = attachReports;
-          if (closeBtnFloat) closeBtnFloat.onclick = closeReportsPanel;
-          if (refreshBtnFloat) refreshBtnFloat.onclick = () => loadReports(currentReportsFilter);
           
           // Setup filter buttons
           setupFilterButtons();

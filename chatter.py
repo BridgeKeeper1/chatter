@@ -232,422 +232,288 @@ def _log_incident(kind: str, meta: dict | None = None):
         pass
 
 # ============================================================================
-# COMPREHENSIVE ANTI-SPAM SYSTEM
-# ============================================================================
+# COMPREHENSIVE ANTI-SPAM SYSTEM - REBUILT FROM SCRATCH
+# Implements all 7 requested features with smart behavior-based detection
 
+import time
 import hashlib
-import difflib
+import re
+import zlib
 from collections import defaultdict, deque
-import gzip
+from difflib import SequenceMatcher
 
-# Anti-spam system state - tracks user behavior patterns and sanctions
-antispam_system_state = {
-    'user_behavior': defaultdict(lambda: {
+# Anti-spam system state - tracks user behavior patterns
+antispam_state = {
+    'user_data': defaultdict(lambda: {
         'message_history': deque(maxlen=50),  # Recent messages for duplicate detection
-        'message_times': deque(maxlen=100),   # Timestamps for rate analysis
-        'message_lengths': deque(maxlen=20),  # Recent message lengths
-        'sanction_level': 0,                  # 0=none, 1=warning, 2=slow_mode, 3=restricted
-        'sanction_count': defaultdict(int),   # Count of each sanction type
-        'last_sanction_time': 0,              # When last sanction was applied
-        'slow_mode_until': 0,                 # Timestamp when slow mode expires
-        'last_message_time': 0,               # For individual slow mode enforcement
-        'pattern_violations': defaultdict(int), # Track specific pattern violations
-        'warning_count': 0,                   # Number of warnings issued
+        'message_hashes': deque(maxlen=100),  # Message hashes for fuzzy matching
+        'violation_count': 0,
+        'last_violation_time': 0,
+        'slow_mode_until': 0,
+        'restriction_level': 0,  # 0=none, 1=warning, 2=slow_mode, 3=restricted
+        'last_message_time': 0,
+        'rapid_message_count': 0,
+        'rapid_message_window_start': 0
     }),
     'global_stats': {
+        'total_messages_checked': 0,
         'total_messages_blocked': 0,
-        'total_warnings_issued': 0,
-        'total_slow_modes_applied': 0,
-        'total_restrictions_applied': 0,
-        'last_cleanup_time': time.time(),
-    },
-    'settings_cache': {},  # Cache for anti-spam settings
-    'message_hashes': deque(maxlen=1000),  # Global recent message hashes for duplicate detection
+        'total_violations': 0,
+        'last_cleanup': time.time()
+    }
 }
 
-def _get_antispam_setting(key, default='0'):
-    """Get anti-spam setting with caching"""
-    try:
-        cache_key = f'ANTISPAM_{key}'
-        if cache_key in antispam_system_state['settings_cache']:
-            return antispam_system_state['settings_cache'][cache_key]
-        
-        value = get_setting(cache_key, default)
-        antispam_system_state['settings_cache'][cache_key] = value
-        return value
-    except Exception:
-        return default
+# Configuration with smart defaults
+ANTISPAM_CONFIG = {
+    'MAX_MESSAGE_LENGTH': 1000,  # Characters
+    'BLOCK_MESSAGE_LENGTH': 2000,  # Hard block threshold
+    'MAX_PAYLOAD_SIZE': 51200,  # 50KB in bytes
+    'RATE_LIMIT_MESSAGES': 1,  # Messages per second
+    'RATE_LIMIT_WINDOW': 3,  # Seconds to track rapid messages
+    'SLOW_MODE_DURATION': 10,  # Seconds
+    'DUPLICATE_SIMILARITY_THRESHOLD': 0.85,  # 85% similarity = duplicate
+    'VIOLATION_DECAY_TIME': 300,  # 5 minutes
+    'PATTERN_ANALYSIS_ENABLED': True,
+    'AUTO_SPLIT_ENABLED': True
+}
 
-def _clear_antispam_settings_cache():
-    """Clear settings cache to force reload"""
-    antispam_system_state['settings_cache'].clear()
-
-def _cleanup_antispam_memory():
+def _cleanup_antispam_data():
     """Clean up old data to prevent memory leaks"""
-    try:
-        now = time.time()
-        # Only cleanup every 10 minutes
-        if now - antispam_system_state['global_stats']['last_cleanup_time'] < 600:
-            return
-        
-        # Clean up old user behavior data
-        cutoff_time = now - 3600  # 1 hour ago
-        users_to_remove = []
-        
-        for username, data in antispam_system_state['user_behavior'].items():
-            # Remove old timestamps
-            while data['message_times'] and data['message_times'][0] < cutoff_time:
-                data['message_times'].popleft()
-            
-            # If user has no recent activity, mark for removal
-            if not data['message_times'] and data['last_message_time'] < cutoff_time:
-                users_to_remove.append(username)
-        
-        # Remove inactive users
-        for username in users_to_remove:
-            del antispam_system_state['user_behavior'][username]
-        
-        antispam_system_state['global_stats']['last_cleanup_time'] = now
-    except Exception:
-        pass
-
-def _calculate_message_hash(text, username):
-    """Calculate hash for duplicate detection"""
-    try:
-        # Normalize text for comparison
-        normalized = re.sub(r'\s+', ' ', (text or '').strip().lower())
-        content = f"{username}:{normalized}"
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
-    except Exception:
-        return None
-
-def _fuzzy_similarity(text1, text2):
-    """Calculate fuzzy similarity between two texts (0.0 to 1.0)"""
-    try:
-        if not text1 or not text2:
-            return 0.0
-        
-        # Normalize texts
-        norm1 = re.sub(r'\s+', ' ', text1.strip().lower())
-        norm2 = re.sub(r'\s+', ' ', text2.strip().lower())
-        
-        if norm1 == norm2:
-            return 1.0
-        
-        # Use difflib for similarity
-        similarity = difflib.SequenceMatcher(None, norm1, norm2).ratio()
-        return similarity
-    except Exception:
-        return 0.0
-
-def _is_near_duplicate(text, username, threshold=0.85):
-    """Check if message is a near-duplicate of recent messages"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        
-        # Check against user's recent messages
-        for recent_msg in list(user_data['message_history'])[-10:]:  # Check last 10 messages
-            similarity = _fuzzy_similarity(text, recent_msg)
-            if similarity >= threshold:
-                return True, similarity
-        
-        return False, 0.0
-    except Exception:
-        return False, 0.0
-
-def _compress_and_measure(text):
-    """Compress text and measure payload size"""
-    try:
-        if not text:
-            return 0, 0
-        
-        original_size = len(text.encode('utf-8'))
-        compressed = gzip.compress(text.encode('utf-8'))
-        compressed_size = len(compressed)
-        
-        return original_size, compressed_size
-    except Exception:
-        return 0, 0
-
-def _detect_suspicious_patterns(text):
-    """Detect suspicious content patterns"""
-    try:
-        if not text:
-            return []
-        
-        violations = []
-        
-        # Excessive whitespace
-        whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
-        if whitespace_ratio > 0.7:
-            violations.append('excessive_whitespace')
-        
-        # HTML/CSS patterns
-        html_tags = len(re.findall(r'<[^>]+>', text))
-        if html_tags > 10:
-            violations.append('excessive_html')
-        
-        # Repeated structures
-        div_count = len(re.findall(r'<div[^>]*>', text, re.IGNORECASE))
-        script_count = len(re.findall(r'<script[^>]*>', text, re.IGNORECASE))
-        br_count = len(re.findall(r'<br[^>]*>', text, re.IGNORECASE))
-        
-        if div_count > 5:
-            violations.append('excessive_divs')
-        if script_count > 0:
-            violations.append('script_tags')
-        if br_count > 20:
-            violations.append('excessive_breaks')
-        
-        # Code block patterns
-        code_blocks = len(re.findall(r'```[\s\S]*?```', text))
-        if code_blocks > 3:
-            violations.append('excessive_code_blocks')
-        
-        return violations
-    except Exception:
-        return []
-
-def _split_message_intelligently(text, max_length=800):
-    """Split message by paragraphs and line breaks"""
-    try:
-        if not text or len(text) <= max_length:
-            return [text] if text else []
-        
-        parts = []
-        
-        # First try splitting by double newlines (paragraphs)
-        paragraphs = text.split('\n\n')
-        current_part = ""
-        
-        for paragraph in paragraphs:
-            if len(current_part + paragraph) <= max_length:
-                current_part += paragraph + '\n\n'
-            else:
-                if current_part:
-                    parts.append(current_part.strip())
-                    current_part = ""
-                
-                # If paragraph itself is too long, split by single newlines
-                if len(paragraph) > max_length:
-                    lines = paragraph.split('\n')
-                    for line in lines:
-                        if len(current_part + line) <= max_length:
-                            current_part += line + '\n'
-                        else:
-                            if current_part:
-                                parts.append(current_part.strip())
-                            current_part = line + '\n'
-                else:
-                    current_part = paragraph + '\n\n'
-        
-        if current_part:
-            parts.append(current_part.strip())
-        
-        return parts
-    except Exception:
-        return [text] if text else []
-
-def _apply_progressive_sanction(username, violation_type):
-    """Apply progressive sanctions based on user behavior"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        # Increment violation count
-        user_data['sanction_count'][violation_type] += 1
-        total_violations = sum(user_data['sanction_count'].values())
-        
-        # Determine sanction level based on total violations
-        if total_violations == 1:
-            # First violation - warning
-            user_data['sanction_level'] = 1
-            user_data['warning_count'] += 1
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_warnings_issued'] += 1
-            return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
-        
-        elif total_violations <= 3:
-            # Second/third violation - slow mode
-            user_data['sanction_level'] = 2
-            slow_duration = min(10 + (total_violations * 5), 60)  # 10-60 seconds
-            user_data['slow_mode_until'] = now + slow_duration
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_slow_modes_applied'] += 1
-            return 'slow_mode', f"🐌 Slow mode applied for {slow_duration} seconds. Please wait before sending another message."
-        
-        else:
-            # Fourth+ violation - restricted state
-            user_data['sanction_level'] = 3
-            restriction_duration = min(300 + (total_violations * 60), 1800)  # 5-30 minutes
-            user_data['slow_mode_until'] = now + restriction_duration
-            user_data['last_sanction_time'] = now
-            antispam_system_state['global_stats']['total_restrictions_applied'] += 1
-            return 'restricted', f"🚫 Restricted for {restriction_duration//60} minutes due to repeated violations. Please review chat guidelines."
+    current_time = time.time()
     
-    except Exception:
-        return 'warning', "⚠️ Please avoid spamming."
+    # Only cleanup every 10 minutes
+    if current_time - antispam_state['global_stats']['last_cleanup'] < 600:
+        return
+    
+    # Clean up old user data
+    users_to_remove = []
+    for username, data in antispam_state['user_data'].items():
+        # Remove users who haven't been active for 1 hour
+        if current_time - data['last_message_time'] > 3600:
+            users_to_remove.append(username)
+        else:
+            # Decay violation counts over time
+            if current_time - data['last_violation_time'] > ANTISPAM_CONFIG['VIOLATION_DECAY_TIME']:
+                data['violation_count'] = max(0, data['violation_count'] - 1)
+    
+    for username in users_to_remove:
+        del antispam_state['user_data'][username]
+    
+    antispam_state['global_stats']['last_cleanup'] = current_time
 
-def _is_user_in_slow_mode(username):
-    """Check if user is currently in slow mode"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
-        
-        if user_data['slow_mode_until'] > now:
-            remaining = int(user_data['slow_mode_until'] - now)
-            return True, remaining
-        
-        return False, 0
-    except Exception:
-        return False, 0
+def _calculate_message_hash(text):
+    """Calculate hash for duplicate detection"""
+    # Normalize text: lowercase, remove extra whitespace, strip
+    normalized = re.sub(r'\s+', ' ', text.lower().strip())
+    return hashlib.md5(normalized.encode()).hexdigest()
 
-def _should_apply_individual_slow_mode(username):
-    """Check if individual slow mode should be applied based on behavior"""
-    try:
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
+def _check_fuzzy_duplicate(text, user_data):
+    """Check for near-duplicate messages using fuzzy matching"""
+    text_normalized = re.sub(r'\s+', ' ', text.lower().strip())
+    
+    for prev_msg in user_data['message_history']:
+        prev_normalized = re.sub(r'\s+', ' ', prev_msg.lower().strip())
+        similarity = SequenceMatcher(None, text_normalized, prev_normalized).ratio()
         
-        # Check recent message frequency
-        recent_messages = [t for t in user_data['message_times'] if now - t < 60]  # Last minute
-        
-        if len(recent_messages) >= 10:  # 10+ messages in last minute
-            return True, "🐌 Automatic slow mode: Too many messages in a short time."
-        
-        # Check for rapid large messages
-        recent_large = 0
-        for i, length in enumerate(list(user_data['message_lengths'])[-5:]):
-            if length > 500:  # Large message
-                recent_large += 1
-        
-        if recent_large >= 3:  # 3+ large messages recently
-            return True, "🐌 Automatic slow mode: Multiple large messages detected."
-        
+        if similarity >= ANTISPAM_CONFIG['DUPLICATE_SIMILARITY_THRESHOLD']:
+            return True, similarity
+    
+    return False, 0.0
+
+def _check_content_patterns(text):
+    """Analyze content for spam patterns"""
+    if not ANTISPAM_CONFIG['PATTERN_ANALYSIS_ENABLED']:
         return False, ""
-    except Exception:
-        return False, ""
+    
+    # Check for excessive whitespace
+    whitespace_ratio = len(re.findall(r'\s', text)) / max(len(text), 1)
+    if whitespace_ratio > 0.7:
+        return True, "Excessive whitespace detected"
+    
+    # Check for HTML/CSS dumps
+    html_tags = len(re.findall(r'<[^>]+>', text))
+    if html_tags > 10:
+        return True, "HTML dump detected"
+    
+    # Check for excessive repeated characters (but not common letters)
+    repeated_chars = re.findall(r'(.)\1{4,}', text.lower())
+    if repeated_chars:
+        # Allow common repeated chars like "hmmm", "nooo", etc.
+        suspicious_repeats = [char for char in repeated_chars if char not in 'aeiouhmno']
+        if suspicious_repeats:
+            return True, f"Excessive character repetition: {suspicious_repeats[0]}"
+    
+    # Check for excessive line breaks
+    line_breaks = text.count('\n')
+    if line_breaks > 20:
+        return True, "Excessive line breaks"
+    
+    return False, ""
+
+def _auto_split_message(text, max_length):
+    """Split large messages intelligently"""
+    if not ANTISPAM_CONFIG['AUTO_SPLIT_ENABLED']:
+        return [text]
+    
+    if len(text) <= max_length:
+        return [text]
+    
+    parts = []
+    
+    # Try to split by paragraphs first
+    paragraphs = text.split('\n\n')
+    current_part = ""
+    
+    for paragraph in paragraphs:
+        if len(current_part + paragraph) <= max_length:
+            current_part += paragraph + '\n\n'
+        else:
+            if current_part:
+                parts.append(current_part.strip())
+                current_part = paragraph + '\n\n'
+            else:
+                # Paragraph is too long, split by sentences
+                sentences = re.split(r'[.!?]+', paragraph)
+                for sentence in sentences:
+                    if len(current_part + sentence) <= max_length:
+                        current_part += sentence + '. '
+                    else:
+                        if current_part:
+                            parts.append(current_part.strip())
+                        current_part = sentence + '. '
+    
+    if current_part:
+        parts.append(current_part.strip())
+    
+    return parts[:5]  # Limit to 5 parts maximum
+
+def _apply_progressive_sanctions(username, user_data, violation_type):
+    """Apply progressive sanctions based on violation history"""
+    current_time = time.time()
+    user_data['violation_count'] += 1
+    user_data['last_violation_time'] = current_time
+    
+    antispam_state['global_stats']['total_violations'] += 1
+    
+    if user_data['violation_count'] == 1:
+        # First violation: Warning
+        user_data['restriction_level'] = 1
+        return 'warning', "⚠️ Warning: Please avoid spamming. Continued violations may result in restrictions."
+    
+    elif user_data['violation_count'] == 2:
+        # Second violation: Slow mode
+        user_data['restriction_level'] = 2
+        user_data['slow_mode_until'] = current_time + ANTISPAM_CONFIG['SLOW_MODE_DURATION']
+        return 'slow_mode', f"🐌 Slow mode activated for {ANTISPAM_CONFIG['SLOW_MODE_DURATION']} seconds due to repeated violations."
+    
+    else:
+        # Third+ violation: Temporary restriction
+        user_data['restriction_level'] = 3
+        user_data['slow_mode_until'] = current_time + (ANTISPAM_CONFIG['SLOW_MODE_DURATION'] * 2)
+        return 'restricted', "🚫 Message temporarily restricted due to repeated spam violations."
 
 def antispam_check_message(username, text, message_type="public", has_attachment=False):
     """
     Main anti-spam check function - returns (allowed, message, split_parts)
     
-    This is the core function called by the message pipeline to check if a message
-    should be allowed, blocked, or split. Implements all 7 anti-spam features.
+    Implements all 7 features:
+    1. Message Length Limit
+    2. Duplicate & Near-Duplicate Detection  
+    3. Payload Size Monitoring
+    4. Auto-Split with Rate Limiting
+    5. Individual Slow Mode
+    6. Content Pattern Analysis
+    7. Progressive Sanction System
     """
+    
     try:
-        # Clean up memory periodically
-        _cleanup_antispam_memory()
+        _cleanup_antispam_data()
         
-        # Check if anti-spam is enabled
-        if _get_antispam_setting('ENABLED', '1') != '1':
-            return True, "", [text] if text else []
+        # Skip checks for admins/superadmins
+        if is_admin(username) or is_superadmin(username):
+            return True, "", [text]
         
-        # Skip checks for superadmins if configured
-        try:
-            if _get_antispam_setting('SKIP_SUPERADMINS', '1') == '1' and is_superadmin(username):
-                return True, "", [text] if text else []
-        except Exception:
-            pass
+        current_time = time.time()
+        user_data = antispam_state['user_data'][username]
+        user_data['last_message_time'] = current_time
         
-        user_data = antispam_system_state['user_behavior'][username]
-        now = time.time()
+        antispam_state['global_stats']['total_messages_checked'] += 1
         
-        # Update user activity
-        user_data['last_message_time'] = now
-        user_data['message_times'].append(now)
-        if text:
-            user_data['message_lengths'].append(len(text))
+        # 5. Individual Slow Mode Check
+        if current_time < user_data['slow_mode_until']:
+            remaining = int(user_data['slow_mode_until'] - current_time)
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, f"🐌 Slow mode active. Please wait {remaining} more seconds.", []
         
-        # 1. CHECK SLOW MODE STATUS
-        in_slow_mode, remaining_time = _is_user_in_slow_mode(username)
-        if in_slow_mode:
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"🐌 You are in slow mode. Please wait {remaining_time} more seconds.", []
+        # 4. Rate Limiting Check
+        if current_time - user_data['rapid_message_window_start'] > ANTISPAM_CONFIG['RATE_LIMIT_WINDOW']:
+            user_data['rapid_message_count'] = 0
+            user_data['rapid_message_window_start'] = current_time
         
-        # 2. CHECK INDIVIDUAL SLOW MODE TRIGGERS
-        should_slow, slow_msg = _should_apply_individual_slow_mode(username)
-        if should_slow:
-            user_data['slow_mode_until'] = now + 10  # 10 second cooldown
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, slow_msg, []
+        user_data['rapid_message_count'] += 1
         
-        # Skip further checks for empty messages with attachments
-        if not text and has_attachment:
-            return True, "", []
+        if user_data['rapid_message_count'] > ANTISPAM_CONFIG['RATE_LIMIT_WINDOW']:
+            action, message = _apply_progressive_sanctions(username, user_data, 'rate_limit')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, message, []
         
-        if not text:
-            return True, "", []
+        # 1. Message Length Limit with Auto-Split
+        if len(text) > ANTISPAM_CONFIG['BLOCK_MESSAGE_LENGTH']:
+            action, message = _apply_progressive_sanctions(username, user_data, 'length')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, message, []
         
-        # 3. MESSAGE LENGTH LIMITS
-        max_length = int(_get_antispam_setting('MAX_MESSAGE_LENGTH', '1000'))
-        if len(text) > max_length:
-            # Check if auto-split is enabled
-            if _get_antispam_setting('AUTO_SPLIT_ENABLED', '1') == '1':
-                split_parts = _split_message_intelligently(text, max_length)
-                if len(split_parts) > 1:
-                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-            
-            # Apply sanction for oversized message
-            sanction_type, sanction_msg = _apply_progressive_sanction(username, 'message_too_long')
-            antispam_system_state['global_stats']['total_messages_blocked'] += 1
-            return False, f"❌ Message too long (max {max_length} characters). {sanction_msg}", []
+        if len(text) > ANTISPAM_CONFIG['MAX_MESSAGE_LENGTH']:
+            if ANTISPAM_CONFIG['AUTO_SPLIT_ENABLED']:
+                split_parts = _auto_split_message(text, ANTISPAM_CONFIG['MAX_MESSAGE_LENGTH'])
+                return True, "", split_parts
+            else:
+                action, message = _apply_progressive_sanctions(username, user_data, 'length')
+                antispam_state['global_stats']['total_messages_blocked'] += 1
+                return False, message, []
         
-        # 4. DUPLICATE & NEAR-DUPLICATE DETECTION
-        if _get_antispam_setting('DUPLICATE_DETECTION', '1') == '1':
-            is_duplicate, similarity = _is_near_duplicate(text, username)
-            if is_duplicate:
-                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'duplicate_message')
-                antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Duplicate or very similar message detected. {sanction_msg}", []
+        # 2. Duplicate & Near-Duplicate Detection
+        msg_hash = _calculate_message_hash(text)
+        if msg_hash in user_data['message_hashes']:
+            action, message = _apply_progressive_sanctions(username, user_data, 'duplicate')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, message, []
         
-        # 5. PAYLOAD SIZE MONITORING
-        if _get_antispam_setting('PAYLOAD_MONITORING', '1') == '1':
-            original_size, compressed_size = _compress_and_measure(text)
-            max_payload = int(_get_antispam_setting('MAX_PAYLOAD_SIZE', '10000'))
-            
-            if original_size > max_payload:
-                sanction_type, sanction_msg = _apply_progressive_sanction(username, 'payload_too_large')
-                antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                return False, f"❌ Message payload too large. {sanction_msg}", []
+        is_fuzzy_duplicate, similarity = _check_fuzzy_duplicate(text, user_data)
+        if is_fuzzy_duplicate:
+            action, message = _apply_progressive_sanctions(username, user_data, 'near_duplicate')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, message, []
         
-        # 6. CONTENT PATTERN ANALYSIS
-        if _get_antispam_setting('PATTERN_ANALYSIS', '1') == '1':
-            violations = _detect_suspicious_patterns(text)
-            if violations:
-                # Track pattern violations
-                for violation in violations:
-                    user_data['pattern_violations'][violation] += 1
-                
-                # Apply sanction if too many pattern violations
-                total_pattern_violations = sum(user_data['pattern_violations'].values())
-                if total_pattern_violations >= 3:
-                    sanction_type, sanction_msg = _apply_progressive_sanction(username, 'suspicious_patterns')
-                    antispam_system_state['global_stats']['total_messages_blocked'] += 1
-                    return False, f"❌ Suspicious content patterns detected. {sanction_msg}", []
+        # 3. Payload Size Monitoring
+        payload_size = len(text.encode('utf-8'))
+        if has_attachment:
+            payload_size *= 2  # Estimate attachment overhead
         
-        # Store message in history for future duplicate detection
+        if payload_size > ANTISPAM_CONFIG['MAX_PAYLOAD_SIZE']:
+            action, message = _apply_progressive_sanctions(username, user_data, 'payload_size')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, message, []
+        
+        # 6. Content Pattern Analysis
+        has_spam_pattern, pattern_reason = _check_content_patterns(text)
+        if has_spam_pattern:
+            action, message = _apply_progressive_sanctions(username, user_data, 'content_pattern')
+            antispam_state['global_stats']['total_messages_blocked'] += 1
+            return False, f"{message} (Reason: {pattern_reason})", []
+        
+        # Message passed all checks - store for future duplicate detection
         user_data['message_history'].append(text)
+        user_data['message_hashes'].append(msg_hash)
         
-        # Calculate and store message hash
-        msg_hash = _calculate_message_hash(text, username)
-        if msg_hash:
-            antispam_system_state['message_hashes'].append(msg_hash)
-        
-        # Message passed all checks
         return True, "", [text]
         
     except Exception as e:
-        # On error, allow message but log the issue
-        try:
-            _log_incident('antispam_error', {'username': username, 'error': str(e)})
-        except Exception:
-            pass
-        return True, "", [text] if text else []
+        # Fail-safe: allow message on error to prevent system breakage
+        print(f"Anti-spam error for {username}: {e}")
+        return True, "", [text]
 
-# ---- Admins UI script injection (registered later to avoid NameError) ----
-def _inject_admins_js(resp):
-    # No-op: do not inject Admins section into right sidebar
-    return resp
+# END ANTI-SPAM SYSTEM
 
 def admins_js():
     js = r'''(() => {
@@ -2062,434 +1928,6 @@ typing_users = {}  # username -> expiry timestamp
 voice_channels = defaultdict(set)  # channel -> set(usernames)
 
 # ============================================================================
-# COMPREHENSIVE ANTI-SPAM SYSTEM
-# ============================================================================
-
-# Anti-spam tracking data structures
-antispam_user_data = defaultdict(lambda: {
-    'message_history': [],  # [(timestamp, channel_type), ...]
-    'content_hashes': [],   # [(timestamp, content_hash), ...]
-    'recent_messages': [],  # [(timestamp, normalized_content, channel_type), ...]
-    'violation_count': 0,
-    'violation_timestamp': 0,
-    'slow_mode_until': 0,
-    'block_until': 0,
-    'last_message_time': 0,
-    'consecutive_large_messages': 0,
-    'pattern_violations': 0
-})
-
-# Anti-spam configuration with defaults
-ANTISPAM_CONFIG = {
-    'MAX_MESSAGE_LENGTH': 1000,
-    'MAX_MESSAGE_BYTES': 4000,
-    'RATE_LIMIT_WINDOW': 10.0,
-    'RATE_LIMIT_MAX_MESSAGES': 8,
-    'MIN_MESSAGE_GAP': 0.7,
-    'DUPLICATE_WINDOW': 60.0,
-    'SIMILARITY_THRESHOLD': 0.85,
-    'SLOW_MODE_DURATION': 10.0,
-    'BLOCK_DURATION_SHORT': 30.0,
-    'BLOCK_DURATION_LONG': 300.0,
-    'VIOLATION_DECAY_TIME': 300.0,
-    'AUTO_SPLIT_THRESHOLD': 500,
-    'AUTO_SPLIT_MAX_PARTS': 5,
-    'PATTERN_HTML_TAG_LIMIT': 10,
-    'PATTERN_BR_TAG_LIMIT': 20,
-    'PATTERN_NEWLINE_LIMIT': 50,
-    'PATTERN_WHITESPACE_RATIO': 0.7
-}
-
-def _load_antispam_config():
-    """Load anti-spam configuration from settings with fallbacks"""
-    config = ANTISPAM_CONFIG.copy()
-    try:
-        config['MAX_MESSAGE_LENGTH'] = int(get_setting('ANTISPAM_MAX_LENGTH', str(config['MAX_MESSAGE_LENGTH'])))
-        config['MAX_MESSAGE_BYTES'] = int(get_setting('ANTISPAM_MAX_BYTES', str(config['MAX_MESSAGE_BYTES'])))
-        config['RATE_LIMIT_WINDOW'] = float(get_setting('ANTISPAM_RATE_WINDOW', str(config['RATE_LIMIT_WINDOW'])))
-        config['RATE_LIMIT_MAX_MESSAGES'] = int(get_setting('ANTISPAM_RATE_MAX', str(config['RATE_LIMIT_MAX_MESSAGES'])))
-        config['MIN_MESSAGE_GAP'] = float(get_setting('ANTISPAM_MIN_GAP', str(config['MIN_MESSAGE_GAP'])))
-        config['SLOW_MODE_DURATION'] = float(get_setting('ANTISPAM_SLOW_DURATION', str(config['SLOW_MODE_DURATION'])))
-    except Exception:
-        pass
-    return config
-
-def _normalize_content(text):
-    """Normalize text content for comparison, avoiding over-normalization"""
-    if not text:
-        return ""
-    
-    # Basic normalization - preserve structure but normalize whitespace
-    normalized = ' '.join(text.strip().split())
-    
-    # Don't normalize single characters or very short messages to avoid blocking common letters
-    if len(normalized) <= 3:
-        return normalized
-    
-    return normalized.lower()
-
-def _generate_content_hash(content):
-    """Generate a hash for content deduplication"""
-    if not content:
-        return ""
-    normalized = _normalize_content(content)
-    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
-
-def _check_message_length(content, config):
-    """Check if message exceeds length limits"""
-    if not content:
-        return True, None
-    
-    char_count = len(content)
-    byte_count = len(content.encode('utf-8'))
-    
-    if char_count > config['MAX_MESSAGE_LENGTH']:
-        return False, f"Message too long ({char_count} characters). Maximum allowed: {config['MAX_MESSAGE_LENGTH']} characters."
-    
-    if byte_count > config['MAX_MESSAGE_BYTES']:
-        return False, f"Message too large ({byte_count} bytes). Maximum allowed: {config['MAX_MESSAGE_BYTES']} bytes."
-    
-    return True, None
-
-def _check_payload_size(content, config):
-    """Check payload size using compression to detect encoded spam"""
-    if not content or len(content) < 200:
-        return True, None
-    
-    try:
-        # Compress content to detect large encoded payloads
-        compressed = zlib.compress(content.encode('utf-8'), level=3)
-        if len(compressed) > config['MAX_MESSAGE_BYTES']:
-            return False, "Message appears to contain large encoded data. Please send as a file instead."
-    except Exception:
-        pass
-    
-    return True, None
-
-def _check_rate_limiting(username, channel_type, config):
-    """Check if user is sending messages too quickly"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Clean old history
-    window = config['RATE_LIMIT_WINDOW']
-    user_data['message_history'] = [
-        (ts, ch) for ts, ch in user_data['message_history'] 
-        if now - ts <= window
-    ]
-    
-    # Check minimum gap between messages
-    if user_data['last_message_time'] and (now - user_data['last_message_time']) < config['MIN_MESSAGE_GAP']:
-        return False, f"Please wait {config['MIN_MESSAGE_GAP']} seconds between messages."
-    
-    # Check maximum messages per window
-    recent_count = len(user_data['message_history'])
-    if recent_count >= config['RATE_LIMIT_MAX_MESSAGES']:
-        return False, f"Too many messages in {window} seconds. Please slow down."
-    
-    return True, None
-
-def _check_duplicate_content(username, content, channel_type, config):
-    """Check for duplicate or near-duplicate content"""
-    if not content or len(content) <= 10:  # Skip very short messages
-        return True, None
-    
-    user_data = antispam_user_data[username]
-    now = time.time()
-    normalized = _normalize_content(content)
-    
-    # Clean old content history
-    window = config['DUPLICATE_WINDOW']
-    user_data['recent_messages'] = [
-        (ts, msg, ch) for ts, msg, ch in user_data['recent_messages']
-        if now - ts <= window
-    ]
-    
-    # Check for exact duplicates
-    for ts, prev_content, prev_channel in user_data['recent_messages']:
-        if normalized == prev_content:
-            return False, "Duplicate message detected. Please avoid repeating the same content."
-    
-    # Check for near-duplicates (only for longer messages to avoid false positives)
-    if len(normalized) >= 20:
-        for ts, prev_content, prev_channel in user_data['recent_messages']:
-            if len(prev_content) >= 20:
-                try:
-                    similarity = difflib.SequenceMatcher(None, normalized, prev_content).ratio()
-                    if similarity > config['SIMILARITY_THRESHOLD']:
-                        return False, "Very similar message detected. Please avoid minor variations of the same content."
-                except Exception:
-                    pass
-    
-    return True, None
-
-def _check_content_patterns(content, config):
-    """Analyze content for suspicious patterns"""
-    if not content:
-        return True, None
-    
-    lower_content = content.lower()
-    
-    # Check for HTML/script injection patterns
-    html_tags = ['<div', '<script', '<style', '<html', '<body', '<iframe', '<object', '<embed']
-    tag_count = sum(lower_content.count(tag) for tag in html_tags)
-    
-    if tag_count >= config['PATTERN_HTML_TAG_LIMIT']:
-        return False, "Message contains too many HTML tags. Please send as a file or remove HTML content."
-    
-    # Check for excessive line breaks
-    br_count = lower_content.count('<br')
-    newline_count = content.count('\n')
-    
-    if br_count >= config['PATTERN_BR_TAG_LIMIT'] or newline_count >= config['PATTERN_NEWLINE_LIMIT']:
-        return False, "Message contains excessive line breaks. Please format your content more concisely."
-    
-    # Check for excessive whitespace (but not single character repetition)
-    if len(content) > 50:  # Only check longer messages
-        whitespace_count = sum(1 for c in content if c.isspace())
-        whitespace_ratio = whitespace_count / len(content)
-        
-        if whitespace_ratio > config['PATTERN_WHITESPACE_RATIO']:
-            return False, "Message contains excessive whitespace. Please format your content properly."
-    
-    return True, None
-
-def _auto_split_message(content, config):
-    """Automatically split large messages if appropriate"""
-    if not content or len(content) <= config['AUTO_SPLIT_THRESHOLD']:
-        return [content] if content else []
-    
-    # Try to split by paragraphs first
-    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
-    if len(paragraphs) > 1 and len(paragraphs) <= config['AUTO_SPLIT_MAX_PARTS']:
-        # Check if each part is reasonable size
-        if all(len(p) <= config['MAX_MESSAGE_LENGTH'] for p in paragraphs):
-            return paragraphs
-    
-    # Try to split by sentences
-    sentences = [s.strip() + '.' for s in content.split('.') if s.strip()]
-    if len(sentences) > 1 and len(sentences) <= config['AUTO_SPLIT_MAX_PARTS']:
-        if all(len(s) <= config['MAX_MESSAGE_LENGTH'] for s in sentences):
-            return sentences
-    
-    # Try to split by lines
-    lines = [line.strip() for line in content.split('\n') if line.strip()]
-    if len(lines) > 1 and len(lines) <= config['AUTO_SPLIT_MAX_PARTS']:
-        if all(len(line) <= config['MAX_MESSAGE_LENGTH'] for line in lines):
-            return lines
-    
-    # If can't split reasonably, return as single message (will be rejected by length check)
-    return [content]
-
-def _apply_progressive_sanctions(username, violation_type, config):
-    """Apply progressive sanctions based on violation history"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Decay old violations
-    if user_data['violation_timestamp'] and (now - user_data['violation_timestamp']) > config['VIOLATION_DECAY_TIME']:
-        user_data['violation_count'] = max(0, user_data['violation_count'] - 1)
-    
-    # Record new violation
-    user_data['violation_count'] += 1
-    user_data['violation_timestamp'] = now
-    
-    violation_count = user_data['violation_count']
-    
-    if violation_count >= 3:
-        # Third violation: Temporary block
-        user_data['block_until'] = now + config['BLOCK_DURATION_LONG']
-        return False, f"You have been temporarily blocked for {config['BLOCK_DURATION_LONG']/60:.1f} minutes due to repeated violations."
-    elif violation_count >= 2:
-        # Second violation: Slow mode
-        user_data['slow_mode_until'] = now + config['SLOW_MODE_DURATION']
-        return False, f"Slow mode enabled for {config['SLOW_MODE_DURATION']} seconds. Please wait before sending another message."
-    else:
-        # First violation: Warning
-        return False, f"Warning: Please follow the chat guidelines. Further violations may result in restrictions."
-
-def _check_user_restrictions(username, config):
-    """Check if user is currently under restrictions"""
-    user_data = antispam_user_data[username]
-    now = time.time()
-    
-    # Check temporary block
-    if user_data['block_until'] > now:
-        remaining = int(user_data['block_until'] - now)
-        return False, f"You are temporarily blocked. Time remaining: {remaining} seconds."
-    elif user_data['block_until'] > 0:
-        user_data['block_until'] = 0  # Clear expired block
-    
-    # Check slow mode
-    if user_data['slow_mode_until'] > now:
-        remaining = int(user_data['slow_mode_until'] - now)
-        return False, f"Slow mode active. Please wait {remaining} seconds before sending another message."
-    elif user_data['slow_mode_until'] > 0:
-        user_data['slow_mode_until'] = 0  # Clear expired slow mode
-    
-    return True, None
-
-def antispam_check_message(username, content, channel_type='public', has_attachment=False):
-    """
-    Main anti-spam checking function that coordinates all checks
-    
-    Args:
-        username: Username of the sender
-        content: Message content to check
-        channel_type: Type of channel ('public', 'dm', 'gdm')
-        has_attachment: Whether message has an attachment
-    
-    Returns:
-        tuple: (allowed: bool, message: str or None, split_parts: list or None)
-    """
-    try:
-        # Superadmins bypass all checks
-        if username in SUPERADMINS:
-            return True, None, None
-        
-        if not username:
-            return False, "Invalid user.", None
-        
-        config = _load_antispam_config()
-        now = time.time()
-        
-        # Check user restrictions first
-        allowed, msg = _check_user_restrictions(username, config)
-        if not allowed:
-            return False, msg, None
-        
-        # For attachment-only messages, only apply rate limiting
-        if not content and has_attachment:
-            allowed, msg = _check_rate_limiting(username, channel_type, config)
-            if not allowed:
-                _apply_progressive_sanctions(username, 'rate_limit', config)
-                return False, msg, None
-            
-            # Update tracking
-            user_data = antispam_user_data[username]
-            user_data['message_history'].append((now, channel_type))
-            user_data['last_message_time'] = now
-            return True, None, None
-        
-        if not content:
-            return True, None, None
-        
-        # 1. Message Length Limits
-        allowed, msg = _check_message_length(content, config)
-        if not allowed:
-            # Try auto-splitting for large messages
-            split_parts = _auto_split_message(content, config)
-            if len(split_parts) > 1 and len(split_parts) <= config['AUTO_SPLIT_MAX_PARTS']:
-                # Check if all parts are valid
-                all_valid = True
-                for part in split_parts:
-                    part_allowed, _ = _check_message_length(part, config)
-                    if not part_allowed:
-                        all_valid = False
-                        break
-                
-                if all_valid:
-                    return True, f"Message will be split into {len(split_parts)} parts.", split_parts
-            
-            _apply_progressive_sanctions(username, 'length', config)
-            return False, msg, None
-        
-        # 2. Payload Size Monitoring
-        allowed, msg = _check_payload_size(content, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'payload', config)
-            return False, msg, None
-        
-        # 3. Rate Limiting
-        allowed, msg = _check_rate_limiting(username, channel_type, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'rate_limit', config)
-            return False, msg, None
-        
-        # 4. Duplicate Detection
-        allowed, msg = _check_duplicate_content(username, content, channel_type, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'duplicate', config)
-            return False, msg, None
-        
-        # 5. Content Pattern Analysis
-        allowed, msg = _check_content_patterns(content, config)
-        if not allowed:
-            _apply_progressive_sanctions(username, 'pattern', config)
-            return False, msg, None
-        
-        # All checks passed - update tracking data
-        user_data = antispam_user_data[username]
-        user_data['message_history'].append((now, channel_type))
-        user_data['recent_messages'].append((now, _normalize_content(content), channel_type))
-        user_data['content_hashes'].append((now, _generate_content_hash(content)))
-        user_data['last_message_time'] = now
-        
-        # Clean up old data to prevent memory leaks
-        window = max(config['RATE_LIMIT_WINDOW'], config['DUPLICATE_WINDOW'])
-        user_data['message_history'] = [(ts, ch) for ts, ch in user_data['message_history'] if now - ts <= window]
-        user_data['recent_messages'] = [(ts, msg, ch) for ts, msg, ch in user_data['recent_messages'] if now - ts <= window]
-        user_data['content_hashes'] = [(ts, h) for ts, h in user_data['content_hashes'] if now - ts <= window]
-        
-        return True, None, None
-        
-    except Exception as e:
-        # Fail open on unexpected errors to avoid breaking chat
-        return True, None, None
-
-def antispam_get_user_status(username):
-    """Get current anti-spam status for a user"""
-    try:
-        if username in SUPERADMINS:
-            return {"status": "superadmin", "restrictions": None}
-        
-        user_data = antispam_user_data[username]
-        now = time.time()
-        
-        status = {"status": "normal", "restrictions": []}
-        
-        if user_data['block_until'] > now:
-            remaining = int(user_data['block_until'] - now)
-            status["status"] = "blocked"
-            status["restrictions"].append(f"Blocked for {remaining} seconds")
-        
-        if user_data['slow_mode_until'] > now:
-            remaining = int(user_data['slow_mode_until'] - now)
-            if status["status"] == "normal":
-                status["status"] = "slow_mode"
-            status["restrictions"].append(f"Slow mode for {remaining} seconds")
-        
-        if user_data['violation_count'] > 0:
-            status["violation_count"] = user_data['violation_count']
-        
-        return status
-    except Exception:
-        return {"status": "unknown", "restrictions": None}
-
-# Initialize anti-spam defaults in settings
-def _init_antispam_settings():
-    """Initialize anti-spam settings with defaults"""
-    try:
-        defaults = {
-            'ANTISPAM_MAX_LENGTH': '1000',
-            'ANTISPAM_MAX_BYTES': '4000',
-            'ANTISPAM_RATE_WINDOW': '10.0',
-            'ANTISPAM_RATE_MAX': '8',
-            'ANTISPAM_MIN_GAP': '0.7',
-            'ANTISPAM_SLOW_DURATION': '10.0',
-        }
-        
-        for key, value in defaults.items():
-            if not get_setting(key):
-                set_setting(key, value)
-    except Exception:
-        pass
-
-# Initialize settings on module load
-_init_antispam_settings()
-
-# ============================================================================
-# END ANTI-SPAM SYSTEM
 # ============================================================================
 
 
@@ -9102,6 +8540,11 @@ small {
     to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 .username {
     font-weight: 700;
 }
@@ -9819,18 +9262,49 @@ CHAT_HTML = """
       </div>
     </div>
 
-    <!-- Reports Panel - Floating Mode (Hidden by default) -->
-    <div id="reportsPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;cursor:move;max-height:80vh;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.2);z-index:9999;overflow:hidden;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:700;display:flex;justify-content:space-between;align-items:center;background:var(--card);color:var(--primary);">
-        <span>📋 Reports Management</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button id="attachReports" type="button" title="Attach to main window" style="padding:4px 8px;background:#6366f1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">📌 Attach</button>
-          <button id="refreshReportsFloat" type="button" title="Refresh reports" style="padding:4px 8px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">🔄</button>
-          <button id="closeReportsFloat" type="button" style="padding:4px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">✕</button>
+    <!-- Reports Management Modal - Solid Popup Mode -->
+    <div id="reportsModalOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;backdrop-filter:blur(2px);">
+      <div id="reportsModal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:90%;max-width:800px;max-height:90vh;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;display:flex;flex-direction:column;">
+        
+        <!-- Modal Header -->
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:var(--card);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+          <h3 style="margin:0;color:var(--primary);font-size:18px;font-weight:600;">&#128203; Reports Management</h3>
+          <button id="closeReportsModal" type="button" style="padding:8px;background:transparent;border:none;color:var(--muted);cursor:pointer;border-radius:6px;transition:all 0.2s;">&#10005;</button>
         </div>
-      </div>
-      <div id="reportsContentFloat" style="padding:12px;overflow-y:auto;max-height:calc(80vh - 60px);color:var(--primary);">
-        <!-- Content will be synced with main reports content -->
+
+        <!-- Filter Buttons -->
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="reports-filter-btn" data-status="all" style="padding:8px 16px;border:1px solid var(--border);background:var(--primary);color:var(--card);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all 0.2s;">All</button>
+            <button class="reports-filter-btn" data-status="pending" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all 0.2s;">Pending</button>
+            <button class="reports-filter-btn" data-status="reviewed" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all 0.2s;">Reviewed</button>
+            <button class="reports-filter-btn" data-status="resolved" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all 0.2s;">Resolved</button>
+            <button class="reports-filter-btn" data-status="dismissed" style="padding:8px 16px;border:1px solid var(--border);background:var(--card);color:var(--primary);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all 0.2s;">Dismissed</button>
+          </div>
+        </div>
+
+        <!-- Content Area -->
+        <div style="flex:1;overflow-y:auto;padding:20px;">
+          
+          <!-- Loading State -->
+          <div id="reportsLoading" style="display:none;text-align:center;padding:40px;color:var(--muted);">
+            <div style="display:inline-block;width:32px;height:32px;border:3px solid var(--border);border-top:3px solid var(--primary);border-radius:50%;animation:spin 1s linear infinite;margin-bottom:16px;"></div>
+            <div>Loading reports...</div>
+          </div>
+
+          <!-- Empty State -->
+          <div id="reportsEmpty" style="display:none;text-align:center;padding:40px;color:var(--muted);">
+            <div style="font-size:48px;margin-bottom:16px;">&#128203;</div>
+            <div style="font-size:16px;font-weight:500;margin-bottom:8px;">No reports found</div>
+            <div style="font-size:14px;">No reports match the current filter criteria.</div>
+          </div>
+
+          <!-- Reports List -->
+          <div id="reportsList" style="display:none;">
+            <!-- Reports will be populated here -->
+          </div>
+
+        </div>
       </div>
     </div>
 
@@ -13976,132 +13450,46 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-        // Reports Management Functions - Enhanced Version
+
+
+        // Reports Management System - Complete Remake
         let currentReportsFilter = 'all';
         let currentReportsOffset = 0;
-        let reportsMode = 'popup'; // 'popup' or 'floating'
         let reportsList = [];
 
-        function openReportsPanel() {
+        // Open reports modal (solid popup mode)
+        function openReportsModal() {
           try {
-            // Close settings overlay first
-            try {
-              document.getElementById('settingsOverlay').style.display = 'none';
-            } catch(e) {}
+            // Close settings overlay first (like admin dashboard)
+            const settingsOverlay = document.getElementById('settingsOverlay');
+            if (settingsOverlay) {
+              settingsOverlay.style.display = 'none';
+            }
             
-            // Open in floating mode by default
-            document.getElementById('reportsPanel').style.display = 'block';
-            reportsMode = 'floating';
-            
-            // Make panel draggable
-            const panel = document.getElementById("reportsPanel");
-            const header = panel.querySelector("div");
-            let isDragging = false;
-            let startX, startY, initialX, initialY;
-            header.onmousedown = (e) => {
-              isDragging = true;
-              startX = e.clientX;
-              startY = e.clientY;
-              initialX = panel.offsetLeft;
-              initialY = panel.offsetTop;
-            };
-            document.onmousemove = (e) => {
-              if (!isDragging) return;
-              panel.style.left = (initialX + e.clientX - startX) + "px";
-              panel.style.top = (initialY + e.clientY - startY) + "px";
-            };
-            document.onmouseup = () => { isDragging = false; };
-            loadReports();
-          } catch(e) {
-            console.error('Error opening reports panel:', e);
-          }
-        }
-
-        function closeReportsPanel() {
-          try {
-            document.getElementById('reportsOverlay').style.display = 'none';
-            document.getElementById('reportsPanel').style.display = 'none';
-          } catch(e) {
-            console.error('Error closing reports panel:', e);
-          }
-        }
-
-        function detachReports() {
-          try {
-            // Switch from popup to floating mode
-            document.getElementById('reportsOverlay').style.display = 'none';
-            document.getElementById('reportsPanel').style.display = 'block';
-            reportsMode = 'floating';
-            
-            // Make panel draggable
-            const panel = document.getElementById("reportsPanel");
-            const header = panel.querySelector("div");
-            let isDragging = false, startX, startY, initialX, initialY;
-            header.onmousedown = (e) => {
-              isDragging = true;
-              startX = e.clientX; startY = e.clientY;
-              const rect = panel.getBoundingClientRect();
-              initialX = rect.left; initialY = rect.top;
-              panel.style.transform = "none";
-              panel.style.left = initialX + "px"; panel.style.top = initialY + "px";
-            };
-            document.onmousemove = (e) => {
-              if (!isDragging) return;
-              panel.style.left = (initialX + e.clientX - startX) + "px";
-              panel.style.top = (initialY + e.clientY - startY) + "px";
-            };
-            document.onmouseup = () => { isDragging = false; };
-            
-            // Sync content to floating panel
-            syncReportsContent();
-          } catch(e) {
-            console.error('Error detaching reports:', e);
-          }
-        }
-
-        function attachReports() {
-          try {
-            // Switch from floating to popup mode
-            document.getElementById('reportsPanel').style.display = 'none';
-            document.getElementById('reportsOverlay').style.display = 'block';
-            reportsMode = 'popup';
-          } catch(e) {
-            console.error('Error attaching reports:', e);
-          }
-        }
-
-        function syncReportsContent() {
-          try {
-            const floatContent = document.getElementById('reportsContentFloat');
-            if (floatContent && reportsMode === 'floating') {
-              // Copy loading state
-              const loading = document.getElementById('reportsLoading');
-              const empty = document.getElementById('reportsEmpty');
-              const list = document.getElementById('reportsList');
-              
-              if (loading && loading.style.display !== 'none') {
-                floatContent.innerHTML = `
-                  <div style="text-align:center;padding:30px;color:var(--muted);">
-                    <div style="font-size:20px;margin-bottom:8px;">u23f3</div>
-                    <div>Loading reports...</div>
-                  </div>
-                `;
-              } else if (empty && empty.style.display !== 'none') {
-                floatContent.innerHTML = `
-                  <div style="text-align:center;padding:30px;color:var(--muted);">
-                    <div style="font-size:20px;margin-bottom:8px;">ud83dudcc4</div>
-                    <div>No reports found</div>
-                  </div>
-                `;
-              } else if (list && list.style.display !== 'none') {
-                floatContent.innerHTML = list.innerHTML;
-              }
+            // Show reports modal overlay
+            const modalOverlay = document.getElementById('reportsModalOverlay');
+            if (modalOverlay) {
+              modalOverlay.style.display = 'block';
+              loadReports('all'); // Load all reports by default
             }
           } catch(e) {
-            console.error('Error syncing reports content:', e);
+            console.error('Error opening reports modal:', e);
           }
         }
 
+        // Close reports modal
+        function closeReportsModal() {
+          try {
+            const modalOverlay = document.getElementById('reportsModalOverlay');
+            if (modalOverlay) {
+              modalOverlay.style.display = 'none';
+            }
+          } catch(e) {
+            console.error('Error closing reports modal:', e);
+          }
+        }
+
+        // Load reports with filtering
         function loadReports(status = 'all', offset = 0, limit = 50) {
           try {
             currentReportsFilter = status;
@@ -14112,8 +13500,8 @@ function showToast(message, type = 'info') {
             document.getElementById('reportsEmpty').style.display = 'none';
             document.getElementById('reportsList').style.display = 'none';
             
-            // Sync loading state to floating panel
-            syncReportsContent();
+            // Update filter button states
+            updateFilterButtons(status);
             
             // Emit request to server
             socket.emit('fetch_reports', {
@@ -14123,200 +13511,154 @@ function showToast(message, type = 'info') {
             });
           } catch(e) {
             console.error('Error loading reports:', e);
+            showReportsError('Failed to load reports');
           }
         }
 
+        // Update filter button states
+        function updateFilterButtons(activeStatus) {
+          try {
+            const buttons = document.querySelectorAll('.reports-filter-btn');
+            buttons.forEach(btn => {
+              const status = btn.getAttribute('data-status');
+              if (status === activeStatus) {
+                btn.style.background = 'var(--primary)';
+                btn.style.color = 'var(--card)';
+              } else {
+                btn.style.background = 'var(--card)';
+                btn.style.color = 'var(--primary)';
+              }
+            });
+          } catch(e) {
+            console.error('Error updating filter buttons:', e);
+          }
+        }
+
+        // Render reports list with expandable dropdowns
         function renderReports(reports, total) {
           try {
-            const reportsList = document.getElementById('reportsList');
-            const reportsCount = document.getElementById('reportsCount');
+            const loadingEl = document.getElementById('reportsLoading');
+            const emptyEl = document.getElementById('reportsEmpty');
+            const listEl = document.getElementById('reportsList');
             
-            // Update count badge
-            if (reportsCount) {
-              reportsCount.textContent = `${total} report${total !== 1 ? 's' : ''}`;
-            }
+            loadingEl.style.display = 'none';
             
-            // Hide loading, show content
-            document.getElementById('reportsLoading').style.display = 'none';
-            
-            if (reports.length === 0) {
-              document.getElementById('reportsEmpty').style.display = 'block';
-              document.getElementById('reportsList').style.display = 'none';
+            if (!reports || reports.length === 0) {
+              emptyEl.style.display = 'block';
+              listEl.style.display = 'none';
               return;
             }
             
-            document.getElementById('reportsEmpty').style.display = 'none';
-            document.getElementById('reportsList').style.display = 'block';
+            emptyEl.style.display = 'none';
+            listEl.style.display = 'block';
             
-            // Generate report items with expandable dropdowns
+            // Build reports HTML
             let html = '';
             reports.forEach(report => {
               const statusColor = getStatusColor(report.status);
-              const statusBadge = `<span style="background:${statusColor};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;">${report.status.toUpperCase()}</span>`;
+              const createdDate = new Date(report.created_at).toLocaleDateString();
+              const reportId = `report-${report.id}`;
               
               html += `
-                <div class="report-item" style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;background:var(--card);">
-                  <div class="report-header" onclick="toggleReportDetails(${report.id})" style="padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;background:#f8fafc;border-bottom:1px solid #e5e7eb;">
+                <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden;">
+                  <!-- Report Header (Collapsed View) -->
+                  <div style="padding:16px;background:var(--card);cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="toggleReportDetails('${reportId}')">
                     <div style="flex:1;">
-                      <div style="font-weight:600;color:#374151;margin-bottom:4px;">
-                        <span id="report-arrow-${report.id}" style="margin-right:8px;transition:transform 0.2s;">▶</span>
-                        User Reported: ${report.reason}
+                      <div style="font-weight:600;color:var(--primary);margin-bottom:4px;">
+                        User Reported: ${report.target_username || 'Unknown'} 
+                        <span style="background:${statusColor};color:white;padding:2px 8px;border-radius:12px;font-size:12px;margin-left:8px;">${report.status}</span>
                       </div>
-                      <div style="font-size:13px;color:#6b7280;">
-                        <strong>${report.reporter_username}</strong> reported <strong>${report.target_username || report.target_id}</strong> • ${formatDate(report.created_at)}
+                      <div style="color:var(--muted);font-size:14px;">
+                        Reported by: ${report.reporter_username} • ${createdDate} • ${report.reason}
                       </div>
                     </div>
-                    <div style="display:flex;align-items:center;gap:8px;">
-                      ${statusBadge}
-                    </div>
+                    <div style="color:var(--muted);font-size:18px;" id="${reportId}-arrow">▼</div>
                   </div>
-                  <div id="report-details-${report.id}" class="report-details" style="display:none;padding:16px;border-top:1px solid #e5e7eb;">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-                      <div>
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Report Type</div>
-                        <div style="color:#6b7280;">${report.report_type}</div>
-                      </div>
-                      <div>
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Target</div>
-                        <div style="color:#6b7280;">${report.target_username || report.target_id}</div>
-                      </div>
+                  
+                  <!-- Report Details (Expandable) -->
+                  <div id="${reportId}-details" style="display:none;padding:16px;border-top:1px solid var(--border);background:var(--hover);">
+                    <div style="margin-bottom:12px;">
+                      <strong style="color:var(--primary);">Report Type:</strong> ${report.report_type || 'message'}
                     </div>
-                    ${report.details ? `
-                      <div style="margin-bottom:16px;">
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Details</div>
-                        <div style="color:#6b7280;background:#f9fafb;padding:8px;border-radius:4px;border:1px solid #e5e7eb;">${report.details}</div>
-                      </div>
-                    ` : ''}
+                    <div style="margin-bottom:12px;">
+                      <strong style="color:var(--primary);">Reason:</strong> ${report.reason}
+                    </div>
+                    <div style="margin-bottom:12px;">
+                      <strong style="color:var(--primary);">Details:</strong>
+                      <div style="background:var(--card);padding:12px;border-radius:6px;margin-top:4px;white-space:pre-wrap;">${report.details || 'No additional details provided.'}</div>
+                    </div>
                     ${report.admin_notes ? `
-                      <div style="margin-bottom:16px;">
-                        <div style="font-weight:600;color:#374151;margin-bottom:4px;">Admin Notes</div>
-                        <div style="color:#6b7280;background:#fef3c7;padding:8px;border-radius:4px;border:1px solid #fbbf24;">${report.admin_notes}</div>
+                      <div style="margin-bottom:12px;">
+                        <strong style="color:var(--primary);">Admin Notes:</strong>
+                        <div style="background:var(--card);padding:12px;border-radius:6px;margin-top:4px;">${report.admin_notes}</div>
                       </div>
                     ` : ''}
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                      <select id="status-${report.id}" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;">
+                    
+                    <!-- Action Buttons -->
+                    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;">
+                      <select id="status-${report.id}" style="padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--primary);">
                         <option value="pending" ${report.status === 'pending' ? 'selected' : ''}>Pending</option>
                         <option value="reviewed" ${report.status === 'reviewed' ? 'selected' : ''}>Reviewed</option>
                         <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
                         <option value="dismissed" ${report.status === 'dismissed' ? 'selected' : ''}>Dismissed</option>
                       </select>
-                      <input id="notes-${report.id}" placeholder="Add admin notes..." value="${report.admin_notes || ''}" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;background:#fff;" />
-                      <button onclick="updateReportStatus(${report.id})" style="padding:6px 12px;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer;">Update</button>
-                      <button onclick="deleteReport(${report.id})" style="padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;">Delete</button>
+                      <input type="text" id="notes-${report.id}" placeholder="Add admin notes..." value="${report.admin_notes || ''}" style="flex:1;padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--primary);">
+                      <button onclick="updateReport(${report.id})" style="padding:6px 12px;background:#059669;color:white;border:none;border-radius:4px;cursor:pointer;">Update</button>
+                      <button onclick="deleteReport(${report.id})" style="padding:6px 12px;background:#dc2626;color:white;border:none;border-radius:4px;cursor:pointer;">Delete</button>
                     </div>
                   </div>
                 </div>
               `;
             });
             
-            reportsList.innerHTML = html;
-            
-            // Sync to floating panel if in floating mode
-            if (reportsMode === 'floating') {
-              syncReportsContent();
-            }
-            
+            listEl.innerHTML = html;
+            reportsList = reports;
           } catch(e) {
             console.error('Error rendering reports:', e);
+            showReportsError('Failed to display reports');
           }
         }
 
+        // Toggle report details dropdown
         function toggleReportDetails(reportId) {
           try {
-            const details = document.getElementById(`report-details-${reportId}`);
-            const arrow = document.getElementById(`report-arrow-${reportId}`);
+            const detailsEl = document.getElementById(`${reportId}-details`);
+            const arrowEl = document.getElementById(`${reportId}-arrow`);
             
-            if (details.style.display === 'none') {
-              details.style.display = 'block';
-              arrow.style.transform = 'rotate(90deg)';
-              arrow.textContent = '▼';
+            if (detailsEl.style.display === 'none') {
+              detailsEl.style.display = 'block';
+              arrowEl.textContent = '▲';
             } else {
-              details.style.display = 'none';
-              arrow.style.transform = 'rotate(0deg)';
-              arrow.textContent = '▶';
+              detailsEl.style.display = 'none';
+              arrowEl.textContent = '▼';
             }
           } catch(e) {
             console.error('Error toggling report details:', e);
           }
         }
 
-        function getStatusColor(status) {
-          switch(status) {
-            case 'pending': return '#f59e0b';
-            case 'reviewed': return '#3b82f6';
-            case 'resolved': return '#059669';
-            case 'dismissed': return '#6b7280';
-            default: return '#374151';
-          }
-        }
-
-        function formatDate(dateStr) {
+        // Update report status and notes
+        function updateReport(reportId) {
           try {
-            const date = new Date(dateStr);
-            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-          } catch(e) {
-            return dateStr;
-        // Bind reports button click handlers
-        try {
-          const reportsBtn = document.getElementById('btnReportsSettings');
-          if (reportsBtn) {
-            reportsBtn.onclick = openReportsPanel;
-          }
-        } catch(e) {
-          console.error('Error binding reports button:', e);
-        }
-
-        // Bind panel close and action handlers
-        try {
-          const closeBtn = document.getElementById('closeReports');
-          const refreshBtn = document.getElementById('refreshReports');
-          const detachBtn = document.getElementById('detachReports');
-          const attachBtn = document.getElementById('attachReports');
-          const closeBtnFloat = document.getElementById('closeReportsFloat');
-          const refreshBtnFloat = document.getElementById('refreshReportsFloat');
-          
-          if (closeBtn) closeBtn.onclick = closeReportsPanel;
-          if (refreshBtn) refreshBtn.onclick = () => loadReports(currentReportsFilter);
-          if (detachBtn) detachBtn.onclick = detachReports;
-          if (attachBtn) attachBtn.onclick = attachReports;
-          if (closeBtnFloat) closeBtnFloat.onclick = closeReportsPanel;
-          if (refreshBtnFloat) refreshBtnFloat.onclick = () => loadReports(currentReportsFilter);
-          
-          // Setup filter buttons
-          setupFilterButtons();
-          
-          // Close overlay when clicking outside
-          document.getElementById('reportsOverlay').onclick = function(e) {
-            if (e.target === this) {
-              closeReportsPanel();
-            }
-          };
-          
-        } catch(e) {
-          console.error('Error binding panel handlers:', e);
-        }
-
-          }
-        }
-
-        function updateReportStatus(reportId) {
-          try {
-            const status = document.getElementById(`status-${reportId}`).value;
-            const notes = document.getElementById(`notes-${reportId}`).value;
+            const statusEl = document.getElementById(`status-${reportId}`);
+            const notesEl = document.getElementById(`notes-${reportId}`);
+            
+            if (!statusEl || !notesEl) return;
             
             socket.emit('update_report_status', {
               report_id: reportId,
-              status: status,
-              admin_notes: notes
+              status: statusEl.value,
+              admin_notes: notesEl.value.trim()
             });
           } catch(e) {
-            console.error('Error updating report status:', e);
+            console.error('Error updating report:', e);
           }
         }
 
+        // Delete report
         function deleteReport(reportId) {
           try {
-            if (confirm('Are you sure you want to delete this report?')) {
+            if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
               socket.emit('delete_report', { report_id: reportId });
             }
           } catch(e) {
@@ -14324,77 +13666,116 @@ function showToast(message, type = 'info') {
           }
         }
 
-        // Filter button handlers
-        function setupFilterButtons() {
-          try {
-            const filterButtons = document.querySelectorAll('.filter-btn');
-            filterButtons.forEach(btn => {
-              btn.addEventListener('click', function() {
-                // Remove active class from all buttons
-                filterButtons.forEach(b => {
-                  b.classList.remove('active');
-                  b.style.background = '#fff';
-                  b.style.color = '#374151';
-                });
-                
-                // Add active class to clicked button
-                this.classList.add('active');
-                this.style.background = '#374151';
-                this.style.color = '#fff';
-                
-                // Load reports with new filter
-                const status = this.dataset.status;
-                loadReports(status);
-              });
-            });
-          } catch(e) {
-            console.error('Error setting up filter buttons:', e);
+        // Get status color
+        function getStatusColor(status) {
+          switch(status) {
+            case 'pending': return '#f59e0b';
+            case 'reviewed': return '#3b82f6';
+            case 'resolved': return '#10b981';
+            case 'dismissed': return '#6b7280';
+            default: return '#6b7280';
           }
         }
 
-        // Socket event handlers for reports
-        socket.on('reports_data', function(data) {
-          try {
-            renderReports(data.reports || [], data.total || 0);
-          } catch(e) {
-            console.error('Error handling reports data:', e);
-          }
-        });
-
-        socket.on('reports_error', function(data) {
+        // Show reports error
+        function showReportsError(message) {
           try {
             document.getElementById('reportsLoading').style.display = 'none';
-            document.getElementById('reportsEmpty').style.display = 'block';
-            document.getElementById('reportsEmpty').innerHTML = `
+            document.getElementById('reportsList').style.display = 'none';
+            const emptyEl = document.getElementById('reportsEmpty');
+            emptyEl.style.display = 'block';
+            emptyEl.innerHTML = `
               <div style="text-align:center;padding:40px;color:var(--muted);">
-                <div style="font-size:24px;margin-bottom:12px;">⚠️</div>
-                <div style="font-size:16px;font-weight:500;">Error loading reports</div>
-                <div style="font-size:14px;margin-top:8px;">${data.message || 'Unknown error occurred'}</div>
+                <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                <div style="font-size:16px;font-weight:500;margin-bottom:8px;">Error Loading Reports</div>
+                <div style="font-size:14px;">${message}</div>
               </div>
             `;
           } catch(e) {
-            console.error('Error handling reports error:', e);
+            console.error('Error showing reports error:', e);
           }
-        });
+        }
 
-        socket.on('report_updated', function(data) {
+        // Initialize reports system
+        function initReportsSystem() {
           try {
-            // Reload reports to show updated data
-            loadReports(currentReportsFilter, currentReportsOffset);
+            // Bind reports button
+            const reportsBtn = document.getElementById('btnReportsSettings');
+            if (reportsBtn) {
+              reportsBtn.onclick = openReportsModal;
+            }
+            
+            // Bind close button
+            const closeBtn = document.getElementById('closeReportsModal');
+            if (closeBtn) {
+              closeBtn.onclick = closeReportsModal;
+            }
+            
+            // Bind click-outside-to-close
+            const modalOverlay = document.getElementById('reportsModalOverlay');
+            if (modalOverlay) {
+              modalOverlay.onclick = function(e) {
+                if (e.target === modalOverlay) {
+                  closeReportsModal();
+                }
+              };
+            }
+            
+            // Bind filter buttons
+            const filterBtns = document.querySelectorAll('.reports-filter-btn');
+            filterBtns.forEach(btn => {
+              btn.onclick = function() {
+                const status = this.getAttribute('data-status');
+                loadReports(status);
+              };
+            });
+            
+            // Socket event handlers
+            socket.on('reports_data', function(data) {
+              try {
+                renderReports(data.reports || [], data.total || 0);
+              } catch(e) {
+                console.error('Error handling reports data:', e);
+              }
+            });
+            
+            socket.on('reports_error', function(data) {
+              try {
+                showReportsError(data.message || 'Failed to fetch reports');
+              } catch(e) {
+                console.error('Error handling reports error:', e);
+              }
+            });
+            
+            socket.on('report_updated', function(data) {
+              try {
+                // Reload reports to show updated data
+                loadReports(currentReportsFilter, currentReportsOffset);
+              } catch(e) {
+                console.error('Error handling report update:', e);
+              }
+            });
+            
+            socket.on('report_deleted', function(data) {
+              try {
+                // Reload reports to remove deleted item
+                loadReports(currentReportsFilter, currentReportsOffset);
+              } catch(e) {
+                console.error('Error handling report deletion:', e);
+              }
+            });
+            
           } catch(e) {
-            console.error('Error handling report update:', e);
+            console.error('Error initializing reports system:', e);
           }
-        });
+        }
 
-        socket.on('report_deleted', function(data) {
-          try {
-            // Reload reports to remove deleted item
-            loadReports(currentReportsFilter, currentReportsOffset);
-          } catch(e) {
-            console.error('Error handling report deletion:', e);
-          }
-        });
-
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', initReportsSystem);
+        } else {
+          initReportsSystem();
+        }
     </script>
 
 </body>
